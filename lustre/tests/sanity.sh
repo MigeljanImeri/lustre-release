@@ -39714,6 +39714,248 @@ test_810() {
 }
 run_test 810 "partial page writes on ZFS (LU-11663)"
 
+sanity_811_direct_counts() {
+	local pool=$1
+
+	do_facet ost1 cat /proc/spl/kstat/zfs/$pool/iostats |
+		awk '/^direct_write_count/ { w = $3 }
+		     /^direct_read_count/ { r = $3 }
+		     END { print w, r }'
+}
+
+# Check the osd-zfs direct IO requirements and set the shared variables
+# OSD, DS, POOL and RS (recordsize).  Save the osd tunables, dataset
+# properties and restore them at exit.
+sanity_811_setup() {
+	[[ "$ost1_FSTYPE" == zfs ]] || skip "ZFS only test"
+	(( $(zfs_version_code ost1) >= $(version_code 2.4.0) )) ||
+		skip_env "need ZFS >= 2.4.0"
+
+	OSD=osd-zfs.$FSNAME-OST0000
+	DS=$(do_facet ost1 $LCTL get_param -n $OSD.mntdev)
+	POOL=${DS%%/*}
+
+	local old_direct=$(do_facet ost1 zfs get -H -o value direct $DS)
+	local old_rs=$(do_facet ost1 zfs get -Hp -o value recordsize $DS)
+	local p="$TMP/$TESTSUITE-$TESTNAME.parameters"
+
+	RS=$old_rs
+
+	[[ -n "$old_direct" && "$old_direct" != "-" ]] ||
+		skip_env "dataset $DS has no direct property"
+	echo "dataset $DS direct=$old_direct recordsize=$old_rs"
+
+	save_lustre_params ost1 "$OSD.direct_enabled" > $p
+	save_lustre_params ost1 "$OSD.nonrotational" >> $p
+	save_lustre_params ost1 "$OSD.readcache_max_io_mb" >> $p
+	save_lustre_params ost1 "$OSD.writethrough_max_io_mb" >> $p
+	stack_trap "restore_lustre_params < $p; rm -f $p"
+	stack_trap "do_facet ost1 zfs set direct=$old_direct $DS"
+	stack_trap "do_facet ost1 zfs set recordsize=$old_rs $DS"
+	stack_trap "rm -f $TMP/$tfile"
+}
+
+sanity_811_prefill() {
+	local mb=$1
+	local direct=$(do_facet ost1 zfs get -H -o value direct $DS)
+
+	rm -f $DIR/$tfile
+	$LFS setstripe -c 1 -i 0 $DIR/$tfile || error "setstripe $tfile failed"
+	dd if=/dev/urandom of=$TMP/$tfile bs=1M count=$mb 2>/dev/null ||
+		error "dd $TMP/$tfile failed"
+	do_facet ost1 zfs set direct=disabled $DS
+	dd if=$TMP/$tfile of=$DIR/$tfile bs=1M conv=fsync 2>/dev/null ||
+		error "prefill $DIR/$tfile failed"
+	do_facet ost1 zfs set direct=$direct $DS
+	cancel_lru_locks osc
+}
+
+sanity_811_verify() {
+	cancel_lru_locks osc
+	cmp $TMP/$tfile $DIR/$tfile || error "$1: data mismatch"
+}
+
+sanity_811_io() {
+	local -a before=($(sanity_811_direct_counts $POOL))
+	local -a after
+
+	dd if=$TMP/$tfile of=$DIR/$tfile oflag=direct conv=notrunc "$@" \
+		2>/dev/null || error "dd write $* failed"
+	sanity_811_verify "dd $*"
+	after=($(sanity_811_direct_counts $POOL))
+	echo $((after[0] - before[0])) $((after[1] - before[1]))
+}
+
+# Overwrite chunks of $DIR/$tfile with new random data through the page
+# cache, the same in $TMP/$tfile, then flush them with one fsync so that
+# they are sent in a single rpc.
+# Print the number of direct writes done by the pool during the flush.
+# usage: sanity_811_one_rpc <offset_bytes:length_bytes> ...
+sanity_811_one_rpc() {
+	local chunk off len
+	local data=$TMP/$tfile.chunk
+
+	cancel_lru_locks osc
+	$LCTL set_param -n osc.*.stats=clear
+	for chunk in "$@"; do
+		off=${chunk%:*}
+		len=${chunk#*:}
+		dd if=/dev/urandom of=$data bs=$len count=1 2>/dev/null ||
+			error "dd $data $len failed"
+		dd if=$data of=$TMP/$tfile bs=$len count=1 conv=notrunc \
+			oflag=seek_bytes seek=$off 2>/dev/null ||
+			error "dd $TMP/$tfile $chunk failed"
+		dd if=$data of=$DIR/$tfile bs=$len count=1 conv=notrunc \
+			oflag=seek_bytes seek=$off 2>/dev/null ||
+			error "dd $DIR/$tfile $chunk failed"
+	done
+	rm -f $data
+
+	(( $(count_ost_writes) == 0 )) ||
+		error "chunks were written before fsync"
+
+	local -a before=($(sanity_811_direct_counts $POOL))
+	local -a after
+
+	$MULTIOP $DIR/$tfile oO_WRONLY:yc || error "fsync $DIR/$tfile failed"
+	after=($(sanity_811_direct_counts $POOL))
+
+	local rpcs=$(count_ost_writes)
+
+	(( rpcs == 1 )) || error "$# chunks sent in $rpcs RPCs, not 1"
+	echo $((after[0] - before[0]))
+}
+
+# Print "<offset>:<length>" for <count> chunks of <length> bytes starting at
+# <start> and separated by gaps of <length> bytes.
+# usage: sanity_811_stride <start> <length> <count>
+sanity_811_stride() {
+	local start=$1 len=$2 count=$3
+	local i
+
+	for ((i = 0; i < count; i++)); do
+		echo -n "$((start + 2 * i * len)):$len "
+	done
+}
+
+test_811a() {
+	sanity_811_setup
+
+	local -a cnt
+
+	sanity_811_prefill 4
+
+	# direct_enabled=0 disables direct IO even with direct=always
+	do_facet ost1 zfs set direct=always $DS
+	do_facet ost1 $LCTL set_param $OSD.direct_enabled=0
+	cnt=($(sanity_811_io bs=$RS))
+	echo "enabled=0 always: direct w/r ${cnt[*]}"
+	(( cnt[0] == 0 && cnt[1] == 0 )) ||
+		error "enabled=0: direct w/r ${cnt[*]} != 0"
+
+	# direct=always uses direct IO for aligned writes and reads
+	do_facet ost1 $LCTL set_param $OSD.direct_enabled=1
+	cnt=($(sanity_811_io bs=$RS))
+	echo "always: direct w/r ${cnt[*]}"
+	(( cnt[0] > 0 && cnt[1] > 0 )) ||
+		error "always: direct w/r ${cnt[*]} not > 0"
+
+	# direct=disabled never uses direct IO
+	do_facet ost1 zfs set direct=disabled $DS
+	cnt=($(sanity_811_io bs=$RS))
+	echo "disabled: direct w/r ${cnt[*]}"
+	(( cnt[0] == 0 && cnt[1] == 0 )) ||
+		error "disabled: direct w/r ${cnt[*]} != 0"
+
+	# direct=standard on rotational media caches IO below the limits,
+	# 16MiB by default, which is more than one RPC here
+	do_facet ost1 zfs set direct=standard $DS
+	do_facet ost1 $LCTL set_param $OSD.nonrotational=0
+	cnt=($(sanity_811_io bs=$RS))
+	echo "standard default: direct w/r ${cnt[*]}"
+	(( cnt[0] == 0 && cnt[1] == 0 )) ||
+		error "standard default: direct w/r ${cnt[*]} != 0"
+
+	# and uses direct IO for 4MiB writes once the limits are 1MiB
+	do_facet ost1 $LCTL set_param $OSD.readcache_max_io_mb=1 \
+		$OSD.writethrough_max_io_mb=1
+	cnt=($(sanity_811_io bs=4M))
+	echo "standard 1MiB: direct w/r ${cnt[*]}"
+	(( cnt[0] > 0 )) || error "standard 1MiB: direct writes ${cnt[0]} == 0"
+	do_facet ost1 $LCTL set_param $OSD.readcache_max_io_mb=16 \
+		$OSD.writethrough_max_io_mb=16 || error "max_io_mb=16 failed"
+
+	# direct=standard on non-rotational media always uses direct IO
+	do_facet ost1 $LCTL set_param $OSD.nonrotational=1
+	cnt=($(sanity_811_io bs=$RS))
+	echo "standard nonrot: direct w/r ${cnt[*]}"
+	(( cnt[0] > 0 && cnt[1] > 0 )) ||
+		error "standard nonrot: direct w/r ${cnt[*]} not > 0"
+
+	# unaligned writes fall back to uncached IO and keep data correct
+	do_facet ost1 zfs set direct=always $DS
+	local -a before=($(sanity_811_direct_counts $POOL))
+	local -a after
+
+	dd if=/dev/urandom of=$TMP/$tfile.part bs=4000 count=1 ||
+		error "dd $TMP/$tfile.part failed"
+	stack_trap "rm -f $TMP/$tfile.part"
+	dd if=$TMP/$tfile.part of=$TMP/$tfile bs=4000 seek=1 conv=notrunc ||
+		error "dd unaligned $TMP/$tfile failed"
+	dd if=$TMP/$tfile.part of=$DIR/$tfile bs=4000 seek=1 \
+		conv=notrunc,fsync || error "dd unaligned $DIR/$tfile failed"
+	sanity_811_verify "unaligned"
+	after=($(sanity_811_direct_counts $POOL))
+	echo "unaligned: direct writes $((after[0] - before[0]))"
+	(( after[0] == before[0] )) ||
+		error "unaligned: direct writes $((after[0] - before[0])) != 0"
+}
+run_test 811a "osd-zfs direct IO honors direct property and tunables"
+
+test_811b() {
+	sanity_811_setup
+
+	local rs=$((128 * 1024))
+	local brw_size="obdfilter.$FSNAME-OST0000.brw_size"
+	local mmpr="osc.$FSNAME-OST0000-osc-[^mM]*.max_mb_per_rpc_read"
+	local old_brw_size=$($LCTL get_param -n $brw_size)
+	local old_mmpr=$($LCTL get_param -n $mmpr)
+	local p="$TMP/$TESTSUITE-$TESTNAME.brw"
+	local mb n w
+
+	# 128KiB records give many direct niobufs in a single 4MiB RPC
+	do_facet ost1 zfs set recordsize=$rs $DS
+	do_facet ost1 $LCTL set_param $OSD.direct_enabled=1
+	stack_trap "$LCTL set_param -n $mmpr=$old_mmpr $brw_size=$old_brw_size"
+	$LCTL set_param -n $brw_size=4 || error "set brw_size=4 failed"
+	remount_client $MOUNT || error "failed to remount client"
+	$LCTL set_param -n $mmpr=4 || error "set max_mb_per_rpc_read=4 failed"
+
+	stop_writeback
+	# discontiguous aligned chunks in one RPC are all written direct
+	do_facet ost1 zfs set direct=always $DS
+	sanity_811_prefill 4
+	w=$(sanity_811_one_rpc $(sanity_811_stride 0 $rs 16))
+	echo "stride 16x128K: direct writes $w"
+	(( w >= 16 )) || error "stride: direct writes $w < 16"
+	sanity_811_verify "stride"
+
+	# one RPC mixes cached, direct and uncached niobufs, the first one is
+	# not direct: 128K cached (< 1MiB limit), 1M direct, 1M+8K unaligned
+	# to the record size (uncached), 4000 bytes cached
+	do_facet ost1 zfs set direct=standard $DS
+	do_facet ost1 $LCTL set_param $OSD.nonrotational=0 \
+		$OSD.writethrough_max_io_mb=1
+	sanity_811_prefill 6
+	w=$(sanity_811_one_rpc 0:$rs $((1 << 20)):$((1 << 20)) \
+		$((3 << 20)):$(((1 << 20) + 8192)) $((5 << 20)):4000)
+	echo "mixed: direct writes $w"
+	(( w >= 8 )) || error "mixed: direct writes $w < 8"
+	sanity_811_verify "mixed"
+	start_writeback
+}
+run_test 811b "osd-zfs direct IO with multi-niobuf and mixed RPCs"
+
 test_812a() {
 	[ $OST1_VERSION -lt $(version_code 2.12.51) ] &&
 		skip "OST < 2.12.51 doesn't support this fail_loc"

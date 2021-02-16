@@ -378,7 +378,7 @@ static ssize_t nonrotational_store(struct kobject *kobj,
 	if (rc)
 		return rc;
 
-	osd->od_nonrotational = val;
+	osd->od_nonrotational = !!val;
 	return count;
 }
 LUSTRE_RW_ATTR(nonrotational);
@@ -459,6 +459,126 @@ static ssize_t readcache_max_filesize_store(struct kobject *kobj,
 }
 LUSTRE_RW_ATTR(readcache_max_filesize);
 
+static ssize_t readcache_max_io_mb_show(struct kobject *kobj,
+					struct attribute *attr,
+					char *buf)
+{
+	struct dt_device *dt = container_of(kobj, struct dt_device,
+					    dd_kobj);
+	struct osd_device *osd = osd_dt_dev(dt);
+
+	LASSERT(osd != NULL);
+	if (unlikely(osd->od_os == NULL))
+		return -EINPROGRESS;
+
+	return scnprintf(buf, PAGE_SIZE, "%lu\n",
+			 osd->od_readcache_max_iosize >> 20);
+}
+
+static ssize_t readcache_max_io_mb_store(struct kobject *kobj,
+					 struct attribute *attr,
+					 const char *buffer, size_t count)
+{
+	struct dt_device *dt = container_of(kobj, struct dt_device,
+					    dd_kobj);
+	struct osd_device *osd = osd_dt_dev(dt);
+	u64 val;
+	int rc;
+
+	LASSERT(osd != NULL);
+	if (unlikely(osd->od_os == NULL))
+		return -EINPROGRESS;
+
+	rc = sysfs_memparse(buffer, count, &val, "MiB");
+	if (rc < 0)
+		return rc;
+
+	if (val > PTLRPC_MAX_BRW_SIZE)
+		return -ERANGE;
+	osd->od_readcache_max_iosize = val;
+	return count;
+}
+LUSTRE_RW_ATTR(readcache_max_io_mb);
+
+static ssize_t writethrough_max_io_mb_show(struct kobject *kobj,
+					   struct attribute *attr,
+					   char *buf)
+{
+	struct dt_device *dt = container_of(kobj, struct dt_device,
+					    dd_kobj);
+	struct osd_device *osd = osd_dt_dev(dt);
+
+	LASSERT(osd != NULL);
+	if (unlikely(osd->od_os == NULL))
+		return -EINPROGRESS;
+
+	return scnprintf(buf, PAGE_SIZE, "%lu\n",
+			 osd->od_writethrough_max_iosize >> 20);
+}
+
+static ssize_t writethrough_max_io_mb_store(struct kobject *kobj,
+					    struct attribute *attr,
+					    const char *buffer, size_t count)
+{
+	struct dt_device *dt = container_of(kobj, struct dt_device,
+					    dd_kobj);
+	struct osd_device *osd = osd_dt_dev(dt);
+	u64 val;
+	int rc;
+
+	LASSERT(osd != NULL);
+	if (unlikely(osd->od_os == NULL))
+		return -EINPROGRESS;
+
+	rc = sysfs_memparse(buffer, count, &val, "MiB");
+	if (rc < 0)
+		return rc;
+
+	if (val > PTLRPC_MAX_BRW_SIZE)
+		return -ERANGE;
+	osd->od_writethrough_max_iosize = val;
+	return count;
+}
+LUSTRE_RW_ATTR(writethrough_max_io_mb);
+
+static ssize_t direct_enabled_show(struct kobject *kobj,
+					   struct attribute *attr,
+					   char *buf)
+{
+	struct dt_device *dt = container_of(kobj, struct dt_device,
+					    dd_kobj);
+	struct osd_device *osd = osd_dt_dev(dt);
+
+	LASSERT(osd != NULL);
+	if (unlikely(osd->od_os == NULL))
+		return -EINPROGRESS;
+
+	return sprintf(buf, "%u\n", osd->od_direct_enabled);
+}
+
+static ssize_t direct_enabled_store(struct kobject *kobj,
+					    struct attribute *attr,
+					    const char *buffer, size_t count)
+{
+	struct dt_device *dt = container_of(kobj, struct dt_device,
+					    dd_kobj);
+	struct osd_device *osd = osd_dt_dev(dt);
+	bool val;
+	int rc;
+
+	LASSERT(osd != NULL);
+	if (unlikely(osd->od_os == NULL))
+		return -EINPROGRESS;
+
+	rc = kstrtobool(buffer, &val);
+	if (rc < 0)
+		return rc;
+
+	osd->od_direct_enabled = !!val;
+	return count;
+}
+LUSTRE_RW_ATTR(direct_enabled);
+
 static struct attribute *zfs_attrs[] = {
 	&lustre_attr_fstype.attr,
 	&lustre_attr_mntdev.attr,
@@ -469,6 +589,9 @@ static struct attribute *zfs_attrs[] = {
 	&lustre_attr_auto_scrub.attr,
 	&lustre_attr_sync_on_lseek.attr,
 	&lustre_attr_readcache_max_filesize.attr,
+	&lustre_attr_readcache_max_io_mb.attr,
+	&lustre_attr_writethrough_max_io_mb.attr,
+	&lustre_attr_direct_enabled.attr,
 	&lustre_attr_fzap_blockshift.attr,
 	NULL,
 };

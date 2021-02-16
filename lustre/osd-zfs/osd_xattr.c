@@ -770,7 +770,7 @@ __osd_xattr_set(const struct lu_env *env, struct osd_object *obj,
 	}
 
 	/* Finally write the xattr value */
-	osd_dmu_write(osd, xa_data_dn, 0, buf->lb_len, buf->lb_buf, tx);
+	osd_dmu_write(osd, xa_data_dn, 0, buf->lb_len, buf->lb_buf, tx, 0);
 
 	size = buf->lb_len;
 	rc = -sa_update(sa_hdl, SA_ZPL_SIZE(osd), &size, 8, tx);
