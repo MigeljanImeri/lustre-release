@@ -39,6 +39,7 @@
 #include <sys/zap.h>
 #include <sys/dbuf.h>
 #include <sys/dmu_objset.h>
+#include <sys/dmu_impl.h>
 #include <lustre_scrub.h>
 
 /**
@@ -275,7 +276,7 @@ struct osd_thread_info {
 	char			*oti_dir_name;
 	uint64_t		oti_lastid_oid;
 
-	/* just for fake RW now */
+	/* for dio / fake RW */
 	struct page		**oti_dio_pages;
 	int			oti_dio_pages_used;
 };
@@ -362,6 +363,7 @@ struct osd_device {
 				 od_posix_acl:1,
 				 od_nonrotational:1,
 				 od_sync_on_lseek:1;
+	zfs_direct_t		 od_direct;
 	unsigned int		 od_dnsize;
 	/* blockshift controls ZFS FatZAP leaf block size.
 	 * Actual block size = 2^N bytes.
@@ -1018,6 +1020,83 @@ static inline void osd_tx_hold_write(dmu_tx_t *tx, uint64_t oid,
 	dmu_tx_hold_write(tx, oid, off, len);
 }
 
+#if defined(HAVE_DMU_DIRECT)
+static inline boolean_t osd_dmu_has_direct(struct osd_device *osd)
+{
+	if (osd->od_direct == ZFS_DIRECT_ALWAYS)
+		return B_TRUE;
+
+	return B_FALSE;
+}
+
+static inline boolean_t osd_dmu_direct_aligned(uint32_t bs, loff_t off,
+		ssize_t len, enum dt_bufs_type rw)
+{
+	size_t mask = PAGE_SIZE - 1;
+
+	if (rw & DT_BUFS_TYPE_WRITE)
+		mask |= bs - 1;
+
+	return ((off | len) & mask) == 0;
+}
+
+static inline abd_t *ll_abd_alloc_from_pages(struct page **pages, loff_t off,
+					     ssize_t len)
+{
+	return abd_alloc_from_pages(pages, off, len);
+}
+
+static inline void ll_abd_free(abd_t *abd)
+{
+	return abd_free(abd);
+}
+
+static inline int ll_dmu_read_abd(dnode_t *dn, uint64_t offset, uint64_t size,
+			      abd_t *data, uint32_t flags)
+{
+	return dmu_read_abd(dn, offset, size, data, flags);
+}
+
+static inline int ll_dmu_write_abd(dnode_t *dn, uint64_t offset, uint64_t size,
+			      abd_t *data, uint32_t flags, dmu_tx_t *tx)
+{
+	return dmu_write_abd(dn, offset, size, data, flags, tx);
+}
+#else
+static inline boolean_t osd_dmu_has_direct(struct osd_device *osd)
+{
+	return B_FALSE;
+}
+
+static inline boolean_t osd_dmu_direct_aligned(uint32_t bs, loff_t off,
+		ssize_t len, enum dt_bufs_type rw)
+{
+	return B_FALSE;
+}
+
+static inline abd_t *ll_abd_alloc_from_pages(struct page **pages, loff_t off,
+					     ssize_t len)
+{
+	return NULL;
+}
+
+static inline void ll_abd_free(abd_t *abd)
+{
+}
+
+static inline int ll_dmu_read_abd(dnode_t *dn, uint64_t offset, uint64_t size,
+			      abd_t *data, uint32_t flags)
+{
+	return 0;
+}
+
+static inline int ll_dmu_write_abd(dnode_t *dn, uint64_t offset, uint64_t size,
+			      abd_t *data, uint32_t flags, dmu_tx_t *tx)
+{
+	return 0;
+}
+#endif
+
 static inline void osd_dmu_write(struct osd_device *osd, dnode_t *dn,
 				 uint64_t offset, uint64_t size,
 				 const char *buf, dmu_tx_t *tx)
@@ -1028,7 +1107,7 @@ static inline void osd_dmu_write(struct osd_device *osd, dnode_t *dn,
 
 static inline int osd_dmu_read(struct osd_device *osd, dnode_t *dn,
 			       uint64_t offset, uint64_t size,
-			       char *buf, int flags)
+			       char *buf, uint32_t flags)
 {
 	LASSERT(dn);
 	return -dmu_read_by_dnode(dn, offset, size, buf, flags);

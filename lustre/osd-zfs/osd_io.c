@@ -147,15 +147,15 @@ static inline ssize_t osd_read_no_record(const struct lu_env *env,
 	return __osd_read(env, dt, buf, pos, &size);
 }
 
-static struct page *osd_dio_page_get(const struct lu_env *env)
+static struct page *osd_dio_page_get(const struct lu_env *env, gfp_t gfp_mask)
 {
-	struct osd_thread_info  *oti = osd_oti_get(env);
+	struct osd_thread_info *oti = osd_oti_get(env);
 	struct page *page;
 	int cur;
 
 	if (unlikely(!oti->oti_dio_pages)) {
 		OBD_ALLOC_PTR_ARRAY_LARGE(oti->oti_dio_pages,
-					  PTLRPC_MAX_BRW_PAGES);
+				PTLRPC_MAX_BRW_PAGES);
 		if (!oti->oti_dio_pages)
 			return ERR_PTR(-ENOMEM);
 	}
@@ -166,21 +166,18 @@ static struct page *osd_dio_page_get(const struct lu_env *env)
 		
 	if (unlikely(!page)) {
 		LASSERT(cur < PTLRPC_MAX_BRW_PAGES);
-		page = alloc_page(GFP_NOFS | __GFP_HIGHMEM);
+		gfp_t flags = gfp_mask ? gfp_mask : GFP_NOFS | __GFP_HIGHMEM;
+
+		page = alloc_page(flags);
 		CDEBUG(D_MALLOC, "alloc page %px\n", page);
 		LASSERT(page);
 		oti->oti_dio_pages[cur] = page;
 		SetPagePrivate2(page);
+		lock_page(page);
 	}
 	oti->oti_dio_pages_used++;
 
 	RETURN(page);
-}
-
-static void osd_dio_page_put(const struct lu_env *env)
-{
-	struct osd_thread_info  *oti = osd_oti_get(env);
-	oti->oti_dio_pages_used--;
 }
 
 static int osd_zfs_fake_lnb(const struct lu_env *env, 
@@ -198,7 +195,7 @@ static int osd_zfs_fake_lnb(const struct lu_env *env,
 			break;
 		}
 
-		page = osd_dio_page_get(env);
+		page = osd_dio_page_get(env, 0);
 		if (IS_ERR(page)) {
 			nrpages = PTR_ERR(page);
 			break;
@@ -453,8 +450,8 @@ out:
 static int osd_bufs_put(const struct lu_env *env, struct dt_object *dt,
 			struct niobuf_local *lnb, int npages)
 {
-	struct osd_thread_info  *oti = osd_oti_get(env);
-	struct osd_object *obj  = osd_dt_obj(dt);
+	struct osd_thread_info *oti = osd_oti_get(env);
+	struct osd_object *obj = osd_dt_obj(dt);
 	struct osd_device *osd = osd_obj2dev(obj);
 	unsigned long ptr;
 	int i;
@@ -463,13 +460,13 @@ static int osd_bufs_put(const struct lu_env *env, struct dt_object *dt,
 	LASSERT(obj->oo_dn);
 
 	for (i = 0; i < npages; i++) {
-		if (lnb[i].lnb_page == NULL)
-			continue;
 		if (lnb[i].lnb_dio) {
-			osd_dio_page_put(env);
+			oti->oti_dio_pages_used--;
 			lnb[i].lnb_dio = 0;
 			goto next;
 		}
+		if (lnb[i].lnb_page == NULL)
+			continue;
 		if (lnb[i].lnb_page->mapping == (void *)obj) {
 			/* this is anonymous page allocated for copy-write */
 			lnb[i].lnb_page->mapping = NULL;
@@ -484,7 +481,6 @@ static int osd_bufs_put(const struct lu_env *env, struct dt_object *dt,
 				atomic_dec(&osd->od_zerocopy_pin);
 			} else if (lnb[i].lnb_data != NULL) {
 				int j, apages, abufsz;
-
 				abufsz = arc_buf_size(lnb[i].lnb_data);
 				apages = abufsz >> PAGE_SHIFT;
 				/* these references to pages must be invalidated
@@ -536,7 +532,7 @@ static inline struct page *kmem_to_page(void *addr)
  */
 static int osd_bufs_get_read(const struct lu_env *env, struct osd_object *obj,
 			     loff_t off, ssize_t len, struct niobuf_local *lnb,
-			     int maxlnb)
+			     int maxlnb, enum dt_bufs_type rw)
 {
 	struct osd_device *osd = osd_obj2dev(obj);
 	int rc, i, numbufs, npages = 0, drop_cache = 0;
@@ -546,6 +542,39 @@ static int osd_bufs_get_read(const struct lu_env *env, struct osd_object *obj,
 
 	ENTRY;
 	record_start_io(osd, READ, 0);
+
+	/*
+	 * Follows same alignment semantics that o_direct in zfs does, must be
+	 * page aligned for reads.
+	 */
+	if (osd_dmu_has_direct(osd) &&
+			osd_dmu_direct_aligned(0, off, len, rw)) {
+		gfp_t gfp_mask = (rw & DT_BUFS_TYPE_LOCAL) ?
+			(GFP_NOFS | __GFP_HIGHMEM) : GFP_HIGHUSER;
+
+		while (len > 0) {
+			if (unlikely(npages >= maxlnb))
+				GOTO(err, rc = -EOVERFLOW);
+
+			lnb->lnb_page = osd_dio_page_get(env, gfp_mask);
+
+			if (lnb->lnb_page == NULL)
+				GOTO(err, rc = -ENOMEM);
+
+			lnb->lnb_file_offset = off;
+			lnb->lnb_page_offset = 0;
+			lnb->lnb_len = PAGE_SIZE;
+			lnb->lnb_dio = 1;
+			lnb->lnb_rc = 0;
+
+			len -= PAGE_SIZE;
+			off += PAGE_SIZE;
+			npages++;
+			lnb++;
+		}
+
+		goto out;
+	}
 
 	if (obj->oo_attr.la_size >= osd->od_readcache_max_filesize)
 		drop_cache = 1;
@@ -629,6 +658,7 @@ static int osd_bufs_get_read(const struct lu_env *env, struct osd_object *obj,
 		dmu_buf_rele_array(dbp, numbufs, osd_0copy_tag);
 	}
 
+out:
 	delta_ms = gethrtime() - start;
 	do_div(delta_ms, NSEC_PER_MSEC);
 	record_end_io(osd, READ, delta_ms, npages * PAGE_SIZE, npages);
@@ -668,7 +698,7 @@ static inline arc_buf_t *osd_request_arcbuf(dnode_t *dn, size_t bs)
 
 static int osd_bufs_get_write(const struct lu_env *env, struct osd_object *obj,
 			      loff_t off, ssize_t len, struct niobuf_local *lnb,
-			      int maxlnb)
+			      int maxlnb, enum dt_bufs_type rw)
 {
 	struct osd_device *osd = osd_obj2dev(obj);
 	int poff, plen, off_in_block, sz_in_block;
@@ -680,6 +710,36 @@ static int osd_bufs_get_write(const struct lu_env *env, struct osd_object *obj,
 	ENTRY;
 
 	osd_choose_next_blocksize(obj, off, len);
+
+	/*
+	 * Follows same alignment semantics that o_direct in zfs does, must be
+	 * recordsize / page aligned for writes.
+	 */
+	if (osd_dmu_has_direct(osd) && osd_dmu_direct_aligned(bs, off, len, rw)
+			&& bs >= osd->od_max_blksz) {
+		npages = len / PAGE_SIZE;
+
+		if (unlikely(npages > maxlnb))
+			GOTO(out_err, rc = -EOVERFLOW);
+
+		gfp_t gfp_mask = (rw & DT_BUFS_TYPE_LOCAL) ?
+			(GFP_NOFS | __GFP_HIGHMEM) : GFP_HIGHUSER;
+
+		for (i = 0; i < npages; i++) {
+			lnb[i].lnb_page = osd_dio_page_get(env, gfp_mask);
+
+			if (lnb[i].lnb_page == NULL)
+				GOTO(out_err, rc = -ENOMEM);
+
+			lnb[i].lnb_file_offset = off + (i * PAGE_SIZE);
+			lnb[i].lnb_page_offset = 0;
+			lnb[i].lnb_len = PAGE_SIZE;
+			lnb[i].lnb_dio = 1;
+			lnb[i].lnb_rc = 0;
+		}
+
+		return (npages);
+	}
 
 	/*
 	 * currently only full blocks are subject to zerocopy approach:
@@ -807,9 +867,9 @@ static int osd_bufs_get(const struct lu_env *env, struct dt_object *dt,
 	}
 
 	if (rw & DT_BUFS_TYPE_WRITE)
-		rc = osd_bufs_get_write(env, obj, offset, len, lnb, maxlnb);
+		rc = osd_bufs_get_write(env, obj, offset, len, lnb, maxlnb, rw);
 	else
-		rc = osd_bufs_get_read(env, obj, offset, len, lnb, maxlnb);
+		rc = osd_bufs_get_read(env, obj, offset, len, lnb, maxlnb, rw);
 
 out:
 	up_read(&obj->oo_guard);
@@ -1059,8 +1119,9 @@ static int osd_write_commit(const struct lu_env *env, struct dt_object *dt,
 			struct niobuf_local *lnb, int npages,
 			struct thandle *th, __u64 user_size)
 {
-	struct osd_object *obj = osd_dt_obj(dt);
-	struct osd_device *osd = osd_obj2dev(obj);
+	struct osd_thread_info *oti = osd_oti_get(env);
+	struct osd_object  *obj  = osd_dt_obj(dt);
+	struct osd_device  *osd = osd_obj2dev(obj);
 	struct osd_thandle *oh;
 	uint64_t new_size = 0;
 	int i, abufsz, rc = 0, drop_cache = 0;
@@ -1179,6 +1240,26 @@ static int osd_write_commit(const struct lu_env *env, struct dt_object *dt,
 			lnb[i].lnb_data = NULL;
 			atomic_dec(&osd->od_zerocopy_loan);
 			iosize += abufsz;
+		} else if (lnb[i].lnb_dio) {
+			ssize_t len = npages * PAGE_SIZE;
+			loff_t off = lnb[i].lnb_file_offset;
+
+			abd_t *abd =
+			    ll_abd_alloc_from_pages(oti->oti_dio_pages, 0, len);
+			rc = ll_dmu_write_abd(obj->oo_dn, off, len,
+			    abd, DMU_DIRECTIO, oh->ot_tx);
+			ll_abd_free(abd);
+
+			if (rc)
+				RETURN(rc);
+
+			for (int j = i; j < npages; j++) {
+				if (lnb[j].lnb_dio)
+					lnb[j].lnb_page = NULL;
+			}
+
+			iosize += len;
+			continue;
 		} else {
 			/* we don't want to deal with cache if nothing
 			 * has been send to ZFS at this step
@@ -1235,8 +1316,10 @@ static int osd_write_commit(const struct lu_env *env, struct dt_object *dt,
 static int osd_read_prep(const struct lu_env *env, struct dt_object *dt,
 			struct niobuf_local *lnb, int npages)
 {
+	struct osd_thread_info *oti = osd_oti_get(env);
 	struct osd_object *obj  = osd_dt_obj(dt);
 	int i;
+	int rc = 0;
 	loff_t eof;
 
 	LASSERT(dt_object_exists(dt));
@@ -1245,6 +1328,17 @@ static int osd_read_prep(const struct lu_env *env, struct dt_object *dt,
 	read_lock(&obj->oo_attr_lock);
 	eof = obj->oo_attr.la_size;
 	read_unlock(&obj->oo_attr_lock);
+
+	if (lnb->lnb_dio) {
+		off_t off = lnb->lnb_file_offset;
+		size_t len = npages * PAGE_SIZE;
+
+		abd_t *abd = ll_abd_alloc_from_pages(oti->oti_dio_pages,
+				0, len);
+		rc = -ll_dmu_read_abd(obj->oo_dn, off, len, abd,
+				DMU_DIRECTIO);
+		ll_abd_free(abd);
+	}
 
 	for (i = 0; i < npages; i++) {
 		if (unlikely(lnb[i].lnb_rc < 0))
@@ -1264,7 +1358,7 @@ static int osd_read_prep(const struct lu_env *env, struct dt_object *dt,
 		}
 	}
 
-	return 0;
+	return (rc);
 }
 
 /*
