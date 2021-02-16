@@ -995,4 +995,26 @@ AC_DEFUN([LZ_ZFS_KABI_SERIAL], [
 			  [dmu_assign_arcbuf_by_dbuf((h), (off), (buf), (tx))],
 			  [dmu_assign_arcbuf_by_dbuf does not have flags arg])
 	])
+	#
+	# ZFS 2.3 check for direct IO interfaces.
+	#
+	LB_CHECK_COMPILE([if ZFS has direct IO interfaces],
+	dmu_direct_io, [
+		#include <sys/dmu.h>
+		#include <sys/dmu_impl.h>
+	],[
+		dnode_t *dn = NULL;
+		dmu_tx_t *tx = NULL;
+		uint32_t flags = DMU_DIRECTIO;
+		struct page **pages = NULL;
+		abd_t *abd = NULL;
+		abd_alloc_from_pages(pages, 0, 0);
+		abd_free(abd);
+		dmu_read_abd(dn, 0, 0, abd, flags);
+		dmu_write_abd(dn, 0, 0, abd, flags, tx);
+
+	],[
+		AC_DEFINE(HAVE_DMU_DIRECT, 1,
+			[Have direct IO interfaces])
+	])
 ])
