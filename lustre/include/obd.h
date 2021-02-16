@@ -495,7 +495,7 @@ struct niobuf_local {
 	/* this lnb corresponds to a hole in the file */
 	__u16		lnb_hole:1;
 	/* page from TLS for dio/fake rw */
-	__u16		lnb_dio:1;
+	__u16		lnb_dio:2;
 };
 
 static inline size_t lnb_pgno(struct niobuf_local *lnb)

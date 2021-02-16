@@ -37,6 +37,7 @@
 #include <sys/zap.h>
 #include <sys/dbuf.h>
 #include <sys/dmu_objset.h>
+#include <sys/dmu_impl.h>
 #include <lustre_scrub.h>
 
 /*
@@ -84,6 +85,10 @@
 
 /* Default FatZAP leaf block shift: 2^13 = 8K */
 #define OSD_FZAP_BLOCKSHIFT_DEFAULT	13
+
+/* TODO: Copied from ldiskfs; ZFS probably wants something else... */
+#define OSD_READCACHE_MAX_IO_MB 8
+#define OSD_WRITECACHE_MAX_IO_MB 8
 
 extern const struct dt_body_operations osd_body_scrub_ops;
 extern const struct dt_body_operations osd_body_ops;
@@ -267,9 +272,11 @@ struct osd_thread_info {
 	char			*oti_dir_name;
 	uint64_t		oti_lastid_oid;
 
-	/* just for fake RW now */
+	/* just for fake RW / dio now */
 	struct folio		**oti_dio_folios;
 	int			oti_dio_pages_used;
+	/* zfs requires pages to alloc abd */
+	struct page		**oti_dio_pages;
 };
 
 extern struct lu_context_key osd_key;
@@ -354,6 +361,14 @@ struct osd_device {
 				 od_posix_acl:1,
 				 od_nonrotational:1,
 				 od_sync_on_lseek:1;
+
+	unsigned long long	 od_readcache_max_filesize;
+	unsigned long		 od_readcache_max_iosize;
+	unsigned long		 od_writethrough_max_iosize;
+
+#ifdef HAVE_DMU_DIRECT
+	zfs_direct_t		 od_direct;
+#endif
 	unsigned int		 od_dnsize;
 	/* blockshift controls ZFS FatZAP leaf block size.
 	 * Actual block size = 2^N bytes.
@@ -409,7 +424,6 @@ struct osd_device {
 	struct list_head	 od_index_backup_list;
 	struct list_head	 od_index_restore_list;
 	spinlock_t		 od_lock;
-	unsigned long long	 od_readcache_max_filesize;
 
 	/* slots to track per-txg commit callbacks */
 	atomic_t		 od_commit_cb_in_txg[OSD_TXG_MAP_SIZE];
@@ -1010,17 +1024,134 @@ static inline void osd_tx_hold_write(dmu_tx_t *tx, uint64_t oid,
 	dmu_tx_hold_write(tx, oid, off, len);
 }
 
+#ifdef HAVE_DMU_DIRECT
+static inline boolean_t osd_dmu_direct_aligned(uint32_t bs, loff_t off,
+		ssize_t len, enum dt_bufs_type rw)
+{
+	size_t mask = PAGE_SIZE - 1;
+
+	if (rw & DT_BUFS_TYPE_WRITE)
+		mask |= bs - 1;
+
+	return ((off | len) & mask) == 0;
+}
+
+static inline boolean_t osd_dmu_use_direct(struct osd_device *osd,
+		uint32_t bs, loff_t off, ssize_t len, enum dt_bufs_type rw,
+		struct osd_object *obj, struct niobuf_local *lnb)
+{
+	boolean_t use_direct = B_FALSE;
+	boolean_t aligned;
+	ssize_t fsize;
+
+	switch (osd->od_direct) {
+	case ZFS_DIRECT_STANDARD:
+		if (osd->od_nonrotational) {
+			use_direct = B_TRUE;
+			break;
+		}
+
+		fsize = max_t(ssize_t, len + off, obj->oo_attr.la_size);
+
+		if (rw & DT_BUFS_TYPE_WRITE)
+			use_direct = len >= osd->od_writethrough_max_iosize;
+		else
+			use_direct = len >= osd->od_readcache_max_iosize ||
+				     fsize >= osd->od_readcache_max_filesize;
+		break;
+	case ZFS_DIRECT_DISABLED:
+		use_direct = B_FALSE;
+		break;
+	case ZFS_DIRECT_ALWAYS:
+		use_direct = B_TRUE;
+		break;
+	}
+
+	if (use_direct == B_FALSE)
+		return use_direct;
+
+	aligned = osd_dmu_direct_aligned(bs, off, len, rw);
+
+	/* Mark lnb to fall back to UNCACHEDIO */
+	if (aligned == B_FALSE) {
+		lnb->lnb_dio = 2;
+		return B_FALSE;
+	}
+
+	return B_TRUE;
+}
+
+static inline abd_t *ll_abd_alloc_from_pages(struct page **pages, loff_t off,
+					     ssize_t len)
+{
+	return abd_alloc_from_pages(pages, off, len);
+}
+
+static inline void ll_abd_free(abd_t *abd)
+{
+	return abd_free(abd);
+}
+
+static inline int ll_dmu_read_abd(dnode_t *dn, uint64_t offset, uint64_t size,
+			      abd_t *data, uint32_t flags)
+{
+	return dmu_read_abd(dn, offset, size, data, flags);
+}
+
+static inline int ll_dmu_write_abd(dnode_t *dn, uint64_t offset, uint64_t size,
+			      abd_t *data, uint32_t flags, dmu_tx_t *tx)
+{
+	return dmu_write_abd(dn, offset, size, data, flags, tx);
+}
+#else
+static inline boolean_t osd_dmu_direct_aligned(uint32_t bs, loff_t off,
+		ssize_t len, enum dt_bufs_type rw)
+{
+	return B_FALSE;
+}
+
+static inline boolean_t osd_dmu_use_direct(struct osd_device *osd,
+		uint32_t bs, loff_t off, ssize_t len, enum dt_bufs_type rw,
+		struct osd_object *obj, struct niobuf_local *lnb)
+{
+	return B_FALSE;
+}
+
+static inline abd_t *ll_abd_alloc_from_pages(struct page **pages, loff_t off,
+					     ssize_t len)
+{
+	return NULL;
+}
+
+static inline void ll_abd_free(abd_t *abd)
+{
+}
+
+static inline int ll_dmu_read_abd(dnode_t *dn, uint64_t offset, uint64_t size,
+			      abd_t *data, uint32_t flags)
+{
+	return 0;
+}
+
+static inline int ll_dmu_write_abd(dnode_t *dn, uint64_t offset, uint64_t size,
+			      abd_t *data, uint32_t flags, dmu_tx_t *tx)
+{
+	return 0;
+}
+#endif
+
 static inline void osd_dmu_write(struct osd_device *osd, dnode_t *dn,
 				 uint64_t offset, uint64_t size,
-				 const char *buf, dmu_tx_t *tx)
+				 const char *buf, dmu_tx_t *tx,
+				 dmu_flags_t flags)
 {
 	LASSERT(dn);
-	ll_dmu_write_by_dnode(dn, offset, size, buf, tx, 0);
+	ll_dmu_write_by_dnode(dn, offset, size, buf, tx, flags);
 }
 
 static inline int osd_dmu_read(struct osd_device *osd, dnode_t *dn,
 			       uint64_t offset, uint64_t size,
-			       char *buf, int flags)
+			       char *buf, uint32_t flags)
 {
 	LASSERT(dn);
 	return -dmu_read_by_dnode(dn, offset, size, buf, flags);
