@@ -494,8 +494,13 @@ struct niobuf_local {
 	__u16		lnb_locked:1;
 	/* this lnb corresponds to a hole in the file */
 	__u16		lnb_hole:1;
-	/* page from TLS for dio/fake rw */
-	__u16		lnb_dio:1;
+	/* page from TLS for dio/fake rw
+	 * also used in osd-zfs to mark lnb
+	 * 1 - DMU_DIRECTIO
+	 * 2 - DMU_UNCACHEDIO
+	 * 3 - fake io
+	 */
+	__u16		lnb_dio:2;
 };
 
 static inline size_t lnb_pgno(struct niobuf_local *lnb)

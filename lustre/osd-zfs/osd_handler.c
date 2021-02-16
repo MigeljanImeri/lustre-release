@@ -42,6 +42,7 @@
 #include <sys/dsl_prop.h>
 #include <sys/sa_impl.h>
 #include <sys/txg.h>
+#include <sys/vdev_impl.h>
 
 struct lu_context_key	osd_key;
 
@@ -577,9 +578,6 @@ int osd_statfs(const struct lu_env *env, struct dt_device *d,
 				 OSD_GRANT_FOR_LOCAL_OIDS / osfs->os_bsize,
 				 osfs->os_bavail);
 
-	/* ZFS does not support reporting nonrotional status yet, so return
-	 * flag only if user has set nonrotational.
-	 */
 	osfs->os_state |= osd->od_nonrotational ? OS_STATFS_NONROT : 0;
 
 	RETURN(0);
@@ -790,9 +788,12 @@ static void osd_key_fini(const struct lu_context *ctx,
 			if (IS_ERR_OR_NULL(folio))
 				continue;
 			folio_clear_private_2(folio);
+			folio_unlock(folio);
 			folio_put(folio);
 		}
 		OBD_FREE_PTR_ARRAY_LARGE(info->oti_dio_folios,
+					 PTLRPC_MAX_BRW_PAGES);
+		OBD_FREE_PTR_ARRAY_LARGE(info->oti_dio_pages,
 					 PTLRPC_MAX_BRW_PAGES);
 	}
 
@@ -880,6 +881,15 @@ static void osd_dnodesize_changed_cb(void *arg, uint64_t newval)
 	osd->od_dnsize = newval;
 }
 
+#ifdef HAVE_DMU_DIRECT
+static void osd_direct_changed_cb(void *arg, uint64_t newval)
+{
+	struct osd_device *osd = arg;
+
+	osd->od_direct = newval;
+}
+#endif
+
 /*
  * This function unregisters all registered callbacks.  It's harmless to
  * unregister callbacks that were never registered so it is used to safely
@@ -897,6 +907,10 @@ static void osd_objset_unregister_callbacks(struct osd_device *o)
 				   osd_readonly_changed_cb, o);
 	(void) dsl_prop_unregister(ds, zfs_prop_to_name(ZFS_PROP_DNODESIZE),
 				   osd_dnodesize_changed_cb, o);
+#ifdef HAVE_DMU_DIRECT
+	(void) dsl_prop_unregister(ds, zfs_prop_to_name(ZFS_PROP_DIRECT),
+				   osd_direct_changed_cb, o);
+#endif
 
 	if (o->arc_prune_cb != NULL) {
 		arc_remove_prune_callback(o->arc_prune_cb);
@@ -937,6 +951,13 @@ static int osd_objset_register_callbacks(struct osd_device *o)
 				osd_dnodesize_changed_cb, o);
 	if (rc)
 		GOTO(err, rc);
+
+#ifdef HAVE_DMU_DIRECT
+	rc = -dsl_prop_register(ds, zfs_prop_to_name(ZFS_PROP_DIRECT),
+				osd_direct_changed_cb, o);
+	if (rc)
+		GOTO(err, rc);
+#endif
 
 	o->arc_prune_cb = arc_add_prune_callback(arc_prune_func, o);
 err:
@@ -1114,8 +1135,6 @@ osd_unlinked_drain(const struct lu_env *env, struct osd_device *osd)
 }
 
 #ifndef HAVE_SPA_GET_MIN_ALLOC_RANGE
-#include <sys/vdev_impl.h>
-
 static void
 spa_get_min_alloc_range(spa_t *spa, uint64_t *min_alloc, uint64_t *max_alloc)
 {
@@ -1148,6 +1167,25 @@ spa_get_min_alloc_range(spa_t *spa, uint64_t *min_alloc, uint64_t *max_alloc)
 #endif /* HAVE_VDEV_OP_MIN_ALLOC */
 }
 #endif /* HAVE_SPA_GET_MIN_ALLOC_RANGE */
+
+static int
+osd_detect_nonrotational(spa_t *spa)
+{
+	vdev_t *rvd = spa->spa_root_vdev;
+	int i;
+
+	for (i = 0; i < rvd->vdev_children; i++) {
+		vdev_t *vd = rvd->vdev_child[i];
+
+		if (vd->vdev_islog || vd->vdev_ishole)
+			continue;
+
+		if (vd->vdev_nonrot == B_FALSE)
+			return (B_FALSE);
+	}
+	return B_TRUE;
+
+}
 
 static int osd_mount(const struct lu_env *env,
 		     struct osd_device *o, struct lustre_cfg *cfg)
@@ -1213,7 +1251,10 @@ static int osd_mount(const struct lu_env *env,
 	spa_get_min_alloc_range(o->od_os->os_spa, &min_alloc, &max_alloc);
 	o->od_min_blksz = max_alloc;
 	o->od_readcache_max_filesize = OSD_MAX_CACHE_SIZE;
+	o->od_readcache_max_iosize = OSD_READCACHE_MAX_IO_MB << 20;
+	o->od_writethrough_max_iosize = OSD_WRITECACHE_MAX_IO_MB << 20;
 	o->od_fzap_blockshift = OSD_FZAP_BLOCKSHIFT_DEFAULT;
+	o->od_nonrotational = osd_detect_nonrotational(o->od_os->os_spa);
 
 	rc = __osd_obj2dnode(o->od_os, o->od_rootid, &rootdn);
 	if (rc)
@@ -1386,11 +1427,6 @@ static int osd_device_init0(const struct lu_env *env,
 	sema_init(&o->od_otable_sem, 1);
 	INIT_LIST_HEAD(&o->od_ios_list);
 	o->od_sync_on_lseek = B_TRUE;
-
-	/* ZFS does not support reporting nonrotional status yet, so this flag
-	 * is only set if explicitly set by the user.
-	 */
-	o->od_nonrotational = 0;
 
 	o->od_fallocate_zero_blocks = osd_fallocate_zero_blocks;
 out:

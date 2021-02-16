@@ -597,4 +597,27 @@ AC_DEFUN([LZ_ZFS_KABI_SERIAL], [
 			  [dmu_buf_hold_array_by_bonus((db), (offset), (len), (read), (tag), (numbufsp), (dbpp))],
 			  [dmu_buf_hold_array_by_bonus has 7 args])
 	])
+	#
+	# ZFS 2.4 check for direct and uncached io interfaces.
+	#
+	LB_CHECK_COMPILE([if ZFS has direct and uncached io interfaces],
+	dmu_direct_io, [
+		#include <sys/dmu.h>
+		#include <sys/dmu_impl.h>
+	],[
+		dnode_t *dn = NULL;
+		dmu_tx_t *tx = NULL;
+		uint32_t flags = DMU_DIRECTIO;
+		uint32_t flags2 = DMU_UNCACHEDIO;
+		struct page **pages = NULL;
+		abd_t *abd = NULL;
+		abd_alloc_from_pages(pages, 0, 0);
+		abd_free(abd);
+		dmu_read_abd(dn, 0, 0, abd, flags);
+		dmu_write_abd(dn, 0, 0, abd, flags, tx);
+
+	],[
+		AC_DEFINE(HAVE_DMU_DIRECT, 1,
+			[Have direct IO interfaces])
+	])
 ])
