@@ -491,7 +491,8 @@ command_t cmdlist[] = {
 	 "Indicate that old changelog records up to <endrec> are no longer of "
 	 "interest to consumer <id>, allowing the system to free up space.\n"
 	 "An <endrec> of 0 means all records.\n"
-	 "usage: changelog_clear <mdtname> <id> <endrec>"},
+	 "The dump flag is optional, and will write the changelog to a file, before it is cleared.\n"
+	 "usage: changelog_clear <mdtname> <id> <endrec> [--dump <file_path>]"},
 	{"fid2path", lfs_fid2path, 0,
 	 "Resolve the full path(s) for given FID(s). For a specific hardlink "
 	 "specify link number <linkno>.\n"
@@ -9555,12 +9556,173 @@ static int lfs_changelog(int argc, char **argv)
 	return (rc == 1 ? 0 : rc);
 }
 
+int print_changelog(char *mdd, char *file_name)
+{
+	struct changelog_rec *rec;
+	void *changelog_priv;
+	FILE *fd;
+	int rc;
+
+	rc = llapi_changelog_start(&changelog_priv,
+				   CHANGELOG_FLAG_BLOCK |
+				   CHANGELOG_FLAG_JOBID |
+				   CHANGELOG_FLAG_EXTRA_FLAGS,
+				   mdd, 0);
+	if (rc < 0) {
+		fprintf(stderr, "%s changelog: cannot start changelog: %s\n",
+			progname, strerror(errno = -rc));
+		return rc;
+	}
+
+	rc = llapi_changelog_set_xflags(changelog_priv,
+					CHANGELOG_EXTRA_FLAG_UIDGID |
+					CHANGELOG_EXTRA_FLAG_NID |
+					CHANGELOG_EXTRA_FLAG_OMODE |
+					CHANGELOG_EXTRA_FLAG_XATTR);
+	if (rc < 0) {
+		fprintf(stderr,
+			"%s changelog: cannot set xflags for changelog: %s\n",
+			progname, strerror(errno = -rc));
+		return rc;
+	}
+
+	if (file_name) {
+		fd = fopen(file_name, "w");
+	}
+	else {
+		fd = stdout;
+	}
+
+	if (fd == NULL) {
+		fprintf(stderr,
+			"%s changelog: cannot open file to dump changelog output\n",
+			progname);
+		return 1;
+	}
+
+	while ((rc = llapi_changelog_recv(changelog_priv, &rec)) == 0) {
+		time_t secs;
+		struct tm ts;
+
+		secs = rec->cr_time >> 30;
+		gmtime_r(&secs, &ts);
+		fprintf(fd,"%ju %02d%-5s %02d:%02d:%02d.%09d %04d.%02d.%02d "
+		       "0x%x t="DFID, (uintmax_t)rec->cr_index, rec->cr_type,
+		       changelog_type2str(rec->cr_type),
+		       ts.tm_hour, ts.tm_min, ts.tm_sec,
+		       (int)(rec->cr_time & ((1 << 30) - 1)),
+		       ts.tm_year + 1900, ts.tm_mon + 1, ts.tm_mday,
+		       rec->cr_flags & CLF_FLAGMASK, PFID(&rec->cr_tfid));
+
+		if (rec->cr_flags & CLF_JOBID) {
+			struct changelog_ext_jobid *jid =
+				changelog_rec_jobid(rec);
+
+			if (jid->cr_jobid[0] != '\0')
+				fprintf(fd," j=%s", jid->cr_jobid);
+		}
+
+		if (rec->cr_flags & CLF_EXTRA_FLAGS) {
+			struct changelog_ext_extra_flags *ef =
+				changelog_rec_extra_flags(rec);
+
+			fprintf(fd," ef=0x%llx",
+			       (unsigned long long)ef->cr_extra_flags);
+
+			if (ef->cr_extra_flags & CLFE_UIDGID) {
+				struct changelog_ext_uidgid *uidgid =
+					changelog_rec_uidgid(rec);
+
+				fprintf(fd," u=%llu:%llu",
+				       (unsigned long long)uidgid->cr_uid,
+				       (unsigned long long)uidgid->cr_gid);
+			}
+			if (ef->cr_extra_flags & CLFE_NID) {
+				struct changelog_ext_nid *nid =
+					changelog_rec_nid(rec);
+
+				fprintf(fd," nid=%s",
+				       libcfs_nid2str(nid->cr_nid));
+			}
+
+			if (ef->cr_extra_flags & CLFE_OPEN) {
+				struct changelog_ext_openmode *omd =
+					changelog_rec_openmode(rec);
+				char mode[] = "---";
+
+				/* exec mode must be exclusive */
+				if (omd->cr_openflags & MDS_FMODE_EXEC) {
+					mode[2] = 'x';
+				} else {
+					if (omd->cr_openflags & MDS_FMODE_READ)
+						mode[0] = 'r';
+					if (omd->cr_openflags &
+					    (MDS_FMODE_WRITE |
+					     MDS_OPEN_TRUNC |
+					     MDS_OPEN_APPEND))
+						mode[1] = 'w';
+				}
+
+				if (strcmp(mode, "---") != 0)
+					fprintf(fd," m=%s", mode);
+			}
+
+			if (ef->cr_extra_flags & CLFE_XATTR) {
+				struct changelog_ext_xattr *xattr =
+					changelog_rec_xattr(rec);
+
+				if (xattr->cr_xattr[0] != '\0')
+					fprintf(fd," x=%s", xattr->cr_xattr);
+			}
+		}
+
+		if (!fid_is_zero(&rec->cr_pfid))
+			fprintf(fd," p="DFID, PFID(&rec->cr_pfid));
+		if (rec->cr_namelen)
+			fprintf(fd," %.*s", rec->cr_namelen,
+			       changelog_rec_name(rec));
+
+		if (rec->cr_flags & CLF_RENAME) {
+			struct changelog_ext_rename *rnm =
+				changelog_rec_rename(rec);
+
+			if (!fid_is_zero(&rnm->cr_sfid))
+				fprintf(fd," s="DFID" sp="DFID" %.*s",
+				       PFID(&rnm->cr_sfid),
+				       PFID(&rnm->cr_spfid),
+				       (int)changelog_rec_snamelen(rec),
+				       changelog_rec_sname(rec));
+		}
+		fprintf(fd,"\n");
+
+		llapi_changelog_free(&rec);
+	}
+
+	llapi_changelog_fini(&changelog_priv);
+
+	if (rc < 0)
+		fprintf(stderr, "%s changelog: cannot access changelog: %s\n",
+			progname, strerror(errno = -rc));
+
+	return (rc == 1 ? 0 : rc);
+
+}
+
 static int lfs_changelog_clear(int argc, char **argv)
 {
 	long long endrec;
+	struct option long_opts[] = {
+		{ .val = 'd', .name = "dump", .has_arg = optional_argument},
+		{ .name = NULL } };
 	int rc;
+	int c;
+	char *mdd_name;
+	char *id;
+	char *file_name;
 
-	if (argc != 4)
+	file_name = NULL;
+
+	if (argc < 4 || argc > 6)
 		return CMD_HELP;
 
 	errno = 0;
@@ -9572,7 +9734,32 @@ static int lfs_changelog_clear(int argc, char **argv)
 		return CMD_HELP;
 	}
 
-	rc = llapi_changelog_clear(argv[1], argv[2], endrec);
+	mdd_name = malloc(strlen(argv[1]) + 1);
+	strcpy(mdd_name, argv[1]);
+
+	id = malloc(strlen(argv[2] + 1));
+	strcpy(id, argv[2]);
+
+	while ((c = getopt_long(argc, argv, "d::",
+		long_opts, NULL)) != -1) {
+		switch (c) {
+		case 'd':
+			if (optarg == NULL && optind < argc 
+					&& argv[optind][0] != '-') {
+				optarg = argv[optind++];
+			}
+			file_name = strdup(optarg);
+			print_changelog(mdd_name, file_name);
+			break;
+		default:
+			fprintf(stderr,
+				"%s changelog: unrecognized option '%s'\n",
+				progname, argv[optind - 1]);
+			return CMD_HELP;
+		}
+	}
+
+	rc = llapi_changelog_clear(mdd_name, id, endrec);
 
 	if (rc == -EINVAL)
 		fprintf(stderr, "%s: record out of range: %llu\n",

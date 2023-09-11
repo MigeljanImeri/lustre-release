@@ -245,7 +245,7 @@ AS_IF([test $ENABLEO2IB = "no"], [
 			O2IB_SYMVER=$LINUX_OBJ/Module.symvers
 		fi
 		if test -n "$O2IB_SYMVER"; then
-			if test ！"$O2IB_SYMVER" -ef "$LINUX_OBJ/Module.symvers"; then
+			if test ! "$O2IB_SYMVER" -ef "$LINUX_OBJ/Module.symvers"; then
 				AC_MSG_NOTICE([adding $O2IB_SYMVER to Symbol Path O2IB])
 				EXTRA_SYMBOLS="$EXTRA_SYMBOLS $O2IB_SYMVER"
 				AC_SUBST(EXTRA_SYMBOLS)
