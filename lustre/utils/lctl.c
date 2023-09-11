@@ -391,7 +391,8 @@ command_t cmdlist[] = {
 	 "usage: --device <mdtname> changelog_register [--help|-h]\n"
 	 "					       [--mask|-m <[+|-]mask1[<,|+|->mask2...]>]\n"
 	 "					       [--nameonly|-n]\n"
-	 "					       [--user|-u <username>]"},
+	 "					       [--user|-u <username>]\n"
+	 "					       [--pfid-only|-p]"},
 	{"changelog_deregister", jt_changelog_deregister, 0,
 	 "deregister an existing changelog user\n"
 	 "usage: --device <mdtname> changelog_deregister [<id>|cl<id>...]\n"

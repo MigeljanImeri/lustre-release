@@ -92,6 +92,15 @@
 #define MDD_CHLG_GC_START (struct task_struct *)(-2)
 /** else the started task_struct address when running **/
 
+#define HASH_BIT_SHIFT 6
+
+struct mdd_pfid_list {
+	struct lu_fid		pfid;
+	struct hlist_node	hash;
+	atomic_t 		ref;
+};
+
+
 struct mdd_changelog {
 	spinlock_t		mc_lock;	/* for index */
 	int			mc_flags;
@@ -104,6 +113,11 @@ struct mdd_changelog {
 	spinlock_t		mc_user_lock;
 	int			mc_lastuser;
 	int			mc_users;      /* registered users number */
+	bool 			mc_pfid_only;	
+	struct cfs_hash 	*mc_pfid_hash_table; /* hash table to store list of pfids
+							who had a child fid registered in
+							the changelogs
+						*/
 	struct task_struct	*mc_gc_task;
 	time64_t		mc_gc_time;    /* last GC check or run time */
 	unsigned int		mc_deniednext; /* interval for recording denied
@@ -387,7 +401,8 @@ int mdd_changelog_data_store_xattr(const struct lu_env *env,
 				   enum changelog_rec_flags clf_flags,
 				   struct mdd_object *mdd_obj,
 				   const char *xattr_name,
-				   struct thandle *handle);
+				   struct thandle *handle,
+				   const struct lu_fid *pfid);
 
 /* mdd_trans.c */
 void mdd_object_make_hint(const struct lu_env *env, struct mdd_object *parent,
@@ -874,6 +889,59 @@ static inline bool mdd_changelog_is_too_idle(struct mdd_device *mdd,
 	return (idle_indexes > mdd->mdd_changelog_max_idle_indexes ||
 		idle_time > mdd->mdd_changelog_max_idle_time ||
 		idle_time * idle_indexes > (24 * 3600ULL << 32));
+}
+
+/*
+ * Tries to add a pfid to the hash table, if it doesn't exist, will add it and 
+ * return 0. Will return non zero if it already exists and doesn't add pfid.
+ */
+static inline int mdd_changelog_add_unique_pfid_to_hash(struct mdd_device *mdd,
+						const struct lu_fid *pfid)
+{	
+	int rc;
+	struct mdd_pfid_list *pfid_list;
+
+	OBD_ALLOC_PTR(pfid_list);
+
+	if (pfid_list == NULL)
+		RETURN(-ENOMEM);
+
+	pfid_list->pfid = *pfid;
+	rc = cfs_hash_add_unique(mdd->mdd_cl.mc_pfid_hash_table, pfid, &pfid_list->hash);
+	
+	return rc;
+}
+
+/*
+ * Checks if a pfid exists in the hash table, returns 1 if it does exists, 0 otherwise. 
+ */
+static inline bool mdd_changelog_check_pfid_in_hash(struct mdd_device *mdd,
+						const struct lu_fid *pfid)
+{
+	struct mdd_pfid_list	*temp;
+
+	temp = cfs_hash_lookup(mdd->mdd_cl.mc_pfid_hash_table, (void *)pfid);
+
+	if (temp) {
+		printk(KERN_INFO "Current pfid "DFID" is already in list\n", PFID(pfid));
+		cfs_hash_put_locked(mdd->mdd_cl.mc_pfid_hash_table, &temp->hash);
+		RETURN(1);
+	}
+
+	RETURN(0);
+}
+
+static int 
+cfs_hash_itr_func(struct cfs_hash *hs, struct cfs_hash_bd *bd, struct hlist_node *node, void *data)
+{
+	cfs_hash_bd_del_locked(hs, bd, node);
+	return 0;
+}
+
+static inline void mdd_changelog_clear_pfid_hash_table(struct mdd_device *mdd)
+{
+	if (mdd->mdd_cl.mc_pfid_hash_table)
+		cfs_hash_for_each_safe(mdd->mdd_cl.mc_pfid_hash_table, cfs_hash_itr_func, NULL); 
 }
 
 bool mdd_changelog_is_space_safe(const struct lu_env *env,

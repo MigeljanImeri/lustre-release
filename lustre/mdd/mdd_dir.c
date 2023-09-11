@@ -938,6 +938,55 @@ bool mdd_changelog_need_gc(const struct lu_env *env, struct mdd_device *mdd,
 	       OBD_FAIL_CHECK(OBD_FAIL_FORCE_GC_THREAD);
 }
 
+/* Checks changelog rec for unique pfids and adds them to hash table, returns 0 if no unique 
+ * pfids were added to hash table. Returns 1 otherwise.
+ */
+int mdd_changelog_store_pfid(struct mdd_device *mdd, struct llog_changelog_rec *rec)
+{
+	if (rec->cr.cr_type == CL_MKDIR) {
+		/* with MKDIR changelog types, record the target fid
+		 * as that way we know which directories to index
+		 * and don't have to recursively look through the directories
+		 * also check the pfid and see if it has been added, and if not add it
+		 */
+		mdd_changelog_add_unique_pfid_to_hash(mdd, &rec->cr.cr_tfid);
+		mdd_changelog_add_unique_pfid_to_hash(mdd, &rec->cr.cr_pfid);
+		
+	}
+	else if (rec->cr.cr_type == CL_RENAME) {
+		/* CL_RENAME is another special case, as it has both 
+		 * a source pfid and a target pfid, and we need to check 
+		 * both to see if they have been recorded already
+		 */
+		struct changelog_ext_rename *rnm = changelog_rec_rename(&rec->cr);
+
+		if (mdd_changelog_add_unique_pfid_to_hash(mdd, &rnm->cr_spfid) &&
+			mdd_changelog_add_unique_pfid_to_hash(mdd, &rec->cr.cr_pfid)) {
+			printk(KERN_INFO "Returning from mdd_changelog_store because pfid "DFID" \
+			and spfid "DFID" are already in list\n",PFID(&rec->cr.cr_pfid), PFID(&rnm->cr_spfid));
+			return(0);
+		}
+
+		mdd_changelog_add_unique_pfid_to_hash(mdd, &rec->cr.cr_pfid);
+		mdd_changelog_add_unique_pfid_to_hash(mdd, &rnm->cr_spfid);
+	}
+
+	else {
+		if (fid_is_sane(&rec->cr.cr_pfid)) {
+			if (mdd_changelog_add_unique_pfid_to_hash(mdd, &rec->cr.cr_pfid)) {
+				printk(KERN_INFO "Returning from mdd_changelog_store because pfid "DFID" is already in list\n",PFID(&rec->cr.cr_pfid));
+				return(0);
+			}
+		}
+		else {
+			return (1);
+		}
+	}
+
+	/* Shouldn't get here*/
+	return (1);
+}
+
 /** Add a changelog entry \a rec to the changelog llog
  * \param mdd
  * \param rec
@@ -954,8 +1003,16 @@ int mdd_changelog_store(const struct lu_env *env, struct mdd_device *mdd,
 	int rc;
 	bool need_gc;
 
+
 	rec->cr_hdr.lrh_len = llog_data_len(sizeof(*rec) +
 					    changelog_rec_varsize(&rec->cr));
+
+	if (mdd->mdd_cl.mc_pfid_only) {
+		rc = mdd_changelog_store_pfid(mdd, rec);
+		if (rc == 0)
+			return (rc);
+	}
+	
 
 	/* llog_lvfs_write_rec sets the llog tail len */
 	rec->cr_hdr.lrh_type = CHANGELOG_REC;
@@ -4916,7 +4973,7 @@ int mdd_dir_layout_shrink(const struct lu_env *env,
 	}
 
 	rc = mdd_changelog_data_store_xattr(env, mdd, CL_LAYOUT, 0, obj,
-					    XATTR_NAME_LMV, handle);
+					    XATTR_NAME_LMV, handle, NULL);
 	GOTO(stop_trans, rc);
 
 stop_trans:
@@ -5178,7 +5235,7 @@ int mdd_dir_layout_split(const struct lu_env *env, struct md_object *o,
 			GOTO(stop_trans, rc);
 
 		rc = mdd_changelog_data_store_xattr(env, mdd, CL_LAYOUT, 0, obj,
-						    XATTR_NAME_LMV, handle);
+						    XATTR_NAME_LMV, handle, NULL);
 	}
 	if (rc)
 		GOTO(stop_trans, rc);

@@ -124,6 +124,7 @@ int mdt_set_som(struct mdt_thread_info *info, struct mdt_object *obj,
 {
 	struct md_object *next = mdt_object_child(obj);
 	struct lu_buf *buf = &info->mti_buf;
+	struct md_attr *ma = &info->mti_attr;
 	struct lustre_som_attrs *som;
 	int rc;
 
@@ -145,7 +146,7 @@ int mdt_set_som(struct mdt_thread_info *info, struct mdt_object *obj,
 	/* update SOM attributes */
 	buf->lb_buf = som;
 	buf->lb_len = sizeof(*som);
-	rc = mo_xattr_set(info->mti_env, next, buf, XATTR_NAME_SOM, 0);
+	rc = mo_xattr_set(info->mti_env, next, buf, XATTR_NAME_SOM, ma, 0);
 	if (!rc && flag == SOM_FL_LAZY) {
 		obj->mot_lsom_size = size;
 		obj->mot_lsom_blocks = blocks;

@@ -5662,6 +5662,7 @@ int jt_changelog_register(int argc, char **argv)
 	{ .val = 'm', .name = "mask", .has_arg = required_argument },
 	{ .val = 'n', .name = "nameonly", .has_arg = no_argument },
 	{ .val = 'u', .name = "user", .has_arg = required_argument },
+	{ .val = 'p', .name = "pfid-only", .has_arg = no_argument },
 	{ .name = NULL } };
 	struct obd_ioctl_data data = { 0 };
 	char rawbuf[MAX_IOC_BUFLEN] = "";
@@ -5669,13 +5670,14 @@ int jt_changelog_register(int argc, char **argv)
 	char *device = lcfg_get_devname();
 	char *username = NULL, *usermask = NULL;
 	bool print_name_only = false;
+	bool pfid_only = false;
 	int c;
 	int rc;
 
 	if (cur_device < 0 || !device)
 		return CMD_HELP;
 
-	while ((c = getopt_long(argc, argv, "hm:nu:", long_opts, NULL)) != -1) {
+	while ((c = getopt_long(argc, argv, "hm:nu:p", long_opts, NULL)) != -1) {
 		switch (c) {
 		case 'm':
 			usermask = strdup(optarg);
@@ -5700,6 +5702,9 @@ int jt_changelog_register(int argc, char **argv)
 				return -errno;
 			}
 			break;
+		case 'p':
+			pfid_only = true;
+			break;
 		case 'h':
 		default:
 			free(username);
@@ -5717,6 +5722,9 @@ int jt_changelog_register(int argc, char **argv)
 	if (usermask) {
 		data.ioc_inlbuf2 = usermask;
 		data.ioc_inllen2 = strlen(usermask) + 1;
+	}
+	if (pfid_only) {
+		data.ioc_u32_2 = 1;
 	}
 
 	rc = llapi_ioctl_pack(&data, &buf, sizeof(rawbuf));
