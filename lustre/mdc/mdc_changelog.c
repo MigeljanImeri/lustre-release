@@ -550,7 +550,8 @@ static loff_t chlg_llseek(struct file *file, loff_t off, int whence)
  * @param[in]  record  Record index up which to clear
  * @return 0 on success, negated error code on failure.
  */
-static int chlg_clear(struct chlg_reader_state *crs, __u32 reader, __u64 record)
+static int chlg_clear(struct chlg_reader_state *crs, __u32 reader, __u64 record, 
+		__u32 barrier_held)
 {
 	struct obd_device *obd = NULL;
 	struct changelog_setinfo cs  = {
@@ -563,9 +564,24 @@ static int chlg_clear(struct chlg_reader_state *crs, __u32 reader, __u64 record)
 	if (obd == NULL)
 		return -ENODEV;
 
-	rc = obd_set_info_async(NULL, obd->obd_self_export,
-				strlen(KEY_CHANGELOG_CLEAR),
-				KEY_CHANGELOG_CLEAR, sizeof(cs), &cs, NULL);
+	if (barrier_held == 1) {
+		/*
+		rc = obd_set_info_async(NULL, obd->obd_self_export,
+					strlen(KEY_CHANGELOG_CLEAR),
+					KEY_CHANGELOG_CLEAR, sizeof(cs), &cs, NULL);
+					
+		printk(KERN_INFO "rc is %d after callling changelog clear\n", rc);
+		*/
+		rc = obd_set_info_async(NULL, obd->obd_self_export,
+					strlen(KEY_TEST_PRINT),
+					KEY_TEST_PRINT, sizeof(cs), &cs, NULL);
+		printk(KERN_INFO "rc is %d after calling test print\n", rc);
+	}
+	else {
+		rc = obd_set_info_async(NULL, obd->obd_self_export,
+					strlen(KEY_CHANGELOG_CLEAR),
+					KEY_CHANGELOG_CLEAR, sizeof(cs), &cs, NULL);
+	}
 
 	chlg_obd_put(crs->crs_ced, obd);
 	return rc;
@@ -591,6 +607,7 @@ static ssize_t chlg_write(struct file *file, const char __user *buff,
 	char *kbuf;
 	__u64 record;
 	__u32 reader;
+	__u32 barrier_held;
 	int rc = 0;
 	ENTRY;
 
@@ -606,8 +623,8 @@ static ssize_t chlg_write(struct file *file, const char __user *buff,
 
 	kbuf[CHLG_CONTROL_CMD_MAX - 1] = '\0';
 
-	if (sscanf(kbuf, "clear:cl%u:%llu", &reader, &record) == 2)
-		rc = chlg_clear(crs, reader, record);
+	if (sscanf(kbuf, "clear:cl%u:%llu:%u", &reader, &record, &barrier_held) == 3)
+		rc = chlg_clear(crs, reader, record, barrier_held);
 	else
 		rc = -EINVAL;
 

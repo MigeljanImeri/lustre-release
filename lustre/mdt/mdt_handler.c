@@ -2798,6 +2798,8 @@ static int mdt_set_info(struct tgt_session_info *tsi)
 	} else if (KEY_IS(KEY_CHANGELOG_CLEAR)) {
 		struct changelog_setinfo *cs = val;
 
+		printk(KERN_INFO "Calling Changelog_clear from mdt_set_info\n");
+
 		if (vallen != sizeof(*cs)) {
 			CERROR("%s: bad changelog_clear setinfo size %d\n",
 			       tgt_name(tsi->tsi_tgt), vallen);

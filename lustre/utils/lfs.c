@@ -9719,6 +9719,7 @@ static int lfs_changelog_clear(int argc, char **argv)
 	char *mdd_name;
 	char *id;
 	char *file_name;
+	int barrier_held;
 
 	file_name = NULL;
 
@@ -9740,6 +9741,8 @@ static int lfs_changelog_clear(int argc, char **argv)
 	id = malloc(strlen(argv[2] + 1));
 	strcpy(id, argv[2]);
 
+	barrier_held = 0;
+
 	while ((c = getopt_long(argc, argv, "d::",
 		long_opts, NULL)) != -1) {
 		switch (c) {
@@ -9749,6 +9752,7 @@ static int lfs_changelog_clear(int argc, char **argv)
 				optarg = argv[optind++];
 			}
 			file_name = strdup(optarg);
+			barrier_held = 1;
 			print_changelog(mdd_name, file_name);
 			break;
 		default:
@@ -9759,7 +9763,7 @@ static int lfs_changelog_clear(int argc, char **argv)
 		}
 	}
 
-	rc = llapi_changelog_clear(mdd_name, id, endrec);
+	rc = llapi_changelog_clear(mdd_name, id, endrec, barrier_held);
 
 	if (rc == -EINVAL)
 		fprintf(stderr, "%s: record out of range: %llu\n",

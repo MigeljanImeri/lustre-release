@@ -1436,7 +1436,7 @@ int lr_clear_cl(struct lr_info *info, int force)
 				 status->ls_mdt_device);
 			rc = llapi_changelog_clear(mdt_device,
 						   status->ls_registration,
-						   info->recno);
+						   info->recno, 0);
 			if (rc)
 				printf("Changelog clear (%s, %s, %lld) returned %d\n",
 				       status->ls_mdt_device,

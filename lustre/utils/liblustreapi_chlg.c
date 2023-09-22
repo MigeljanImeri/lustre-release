@@ -304,7 +304,7 @@ int llapi_changelog_in_buf(void *priv)
 }
 
 int llapi_changelog_clear(const char *mdtname, const char *idstr,
-			  long long endrec)
+			  long long endrec, int barrier_held)
 {
 	char dev_path[PATH_MAX];
 	char cmd[64];
@@ -328,8 +328,8 @@ int llapi_changelog_clear(const char *mdtname, const char *idstr,
 			return -ENOMEM;
 	}
 
-	rc = snprintf(cmd, cmd_len, "clear:%s:%lld", dashp ? clidp : idstr,
-		      endrec);
+	rc = snprintf(cmd, cmd_len, "clear:%s:%lld:%d", dashp ? clidp : idstr,
+		      endrec, barrier_held);
 	if (rc >= sizeof(cmd)) {
 		rc = -EINVAL;
 		goto out;
