@@ -242,10 +242,10 @@ struct md_object_operations {
 
 	int (*moo_xattr_set)(const struct lu_env *env, struct md_object *obj,
 			     const struct lu_buf *buf, const char *name,
-			     int fl);
+			     const struct md_attr *attr, int fl);
 
 	int (*moo_xattr_del)(const struct lu_env *env, struct md_object *obj,
-			     const char *name);
+			     const struct md_attr *attr, const char *name);
 
 	/** This method is used to swap the layouts between 2 objects */
 	int (*moo_swap_layouts)(const struct lu_env *env,
@@ -486,20 +486,22 @@ static inline int mo_xattr_get(const struct lu_env *env,
 
 static inline int mo_xattr_del(const struct lu_env *env,
                                struct md_object *m,
+			       const struct md_attr *at,
                                const char *name)
 {
         LASSERT(m->mo_ops->moo_xattr_del);
-        return m->mo_ops->moo_xattr_del(env, m, name);
+        return m->mo_ops->moo_xattr_del(env, m, at, name);
 }
 
 static inline int mo_xattr_set(const struct lu_env *env,
                                struct md_object *m,
                                const struct lu_buf *buf,
                                const char *name,
-                               int flags)
+                               const struct md_attr *at,
+			       int flags)
 {
         LASSERT(m->mo_ops->moo_xattr_set);
-        return m->mo_ops->moo_xattr_set(env, m, buf, name, flags);
+        return m->mo_ops->moo_xattr_set(env, m, buf, name, at, flags);
 }
 
 static inline int mo_xattr_list(const struct lu_env *env,

@@ -2767,6 +2767,8 @@ static int mdt_set_info(struct tgt_session_info *tsi)
 
 	ENTRY;
 
+	printk(KERN_INFO "We got to mdt_set_info\n");
+
 	key = req_capsule_client_get(tsi->tsi_pill, &RMF_SETINFO_KEY);
 	if (key == NULL) {
 		DEBUG_REQ(D_HA, req, "no set_info key");
@@ -2798,7 +2800,7 @@ static int mdt_set_info(struct tgt_session_info *tsi)
 	} else if (KEY_IS(KEY_CHANGELOG_CLEAR)) {
 		struct changelog_setinfo *cs = val;
 
-		printk(KERN_INFO "Calling Changelog_clear from mdt_set_info\n");
+		printk(KERN_INFO "Calling KEY_CHANGELOG_CLEAR from mdt_set_info\n");
 
 		if (vallen != sizeof(*cs)) {
 			CERROR("%s: bad changelog_clear setinfo size %d\n",
@@ -2814,10 +2816,17 @@ static int mdt_set_info(struct tgt_session_info *tsi)
 			RETURN(-EACCES);
 		rc = mdt_iocontrol(OBD_IOC_CHANGELOG_CLEAR, req->rq_export,
 				   vallen, val, NULL);
+
+	} else if (KEY_IS(KEY_TEST_PRINT)) {
+		printk(KERN_INFO "Calling KEY_TEST_PRINT from mdt_set_info\n");
+		rc = mdt_iocontrol(OBD_IOC_TEST_PRINT, req->rq_export,
+				   vallen, val, NULL);
+
 	} else if (KEY_IS(KEY_EVICT_BY_NID)) {
 		if (vallen > 0)
 			obd_export_evict_by_nid(req->rq_export->exp_obd, val);
 	} else {
+		printk(KERN_INFO "mdt_set_info doesn't recognize key passed in\n");
 		RETURN(-EINVAL);
 	}
 	RETURN(rc);
@@ -7573,6 +7582,7 @@ static int mdt_iocontrol(unsigned int cmd, struct obd_export *exp, int len,
 	case OBD_IOC_CHANGELOG_CLEAR:
 	case OBD_IOC_LLOG_PRINT:
 	case OBD_IOC_LLOG_CANCEL:
+	case OBD_IOC_TEST_PRINT:
 		rc = mdt->mdt_child->md_ops->mdo_iocontrol(&env,
 							   mdt->mdt_child,
 							   cmd, len, karg);

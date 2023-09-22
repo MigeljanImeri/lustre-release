@@ -227,5 +227,8 @@ enum obd_abort_recovery_flags {
 #define OBD_IOC_BARRIER		_IOWR('f', 261, OBD_IOC_DATA_TYPE)
 
 #define IOC_OSC_SET_ACTIVE	_IOWR('h', 21, void *)
+#define OBD_IOC_GET_BARRIER	_IOWR('f', 262, OBD_IOC_DATA_TYPE)
+#define OBD_IOC_CHANGELOG_CLEAR_BARRIER	_IOWR('f', 263, struct obd_ioctl_data)
+#define OBD_IOC_TEST_PRINT	_IOWR('f', 264, struct obd_ioctl_data)
 
 #endif /* _UAPI_LUSTRE_IOCTL_H */

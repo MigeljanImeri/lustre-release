@@ -1903,7 +1903,7 @@ static int mdt_hsm_release(struct mdt_thread_info *info, struct mdt_object *o,
 			lustre_hsm2buf(buf->lb_buf, &ma->ma_hsm);
 
 			rc = mo_xattr_set(info->mti_env, mdt_object_child(o),
-					  buf, XATTR_NAME_HSM, 0);
+					  buf, XATTR_NAME_HSM, ma, 0);
 			if (rc)
 				GOTO(out_unlock, rc);
 		}
@@ -2010,7 +2010,7 @@ static int mdt_hsm_release(struct mdt_thread_info *info, struct mdt_object *o,
 	cap = uc->uc_cap;
 	cap_raise(uc->uc_cap, CAP_FOWNER);
 	rc = mo_xattr_set(info->mti_env, mdt_object_child(orphan), buf,
-			  XATTR_NAME_HSM, 0);
+			  XATTR_NAME_HSM, ma, 0);
 	uc->uc_cap = cap;
 	if (rc != 0)
 		GOTO(out_layout_lock, rc);
@@ -2214,7 +2214,7 @@ int mdt_close_handle_layouts(struct mdt_thread_info *info,
 		buf->lb_len = sizeof(mrd);
 		buf->lb_buf = &mrd;
 		rc = mo_xattr_set(info->mti_env, mdt_object_child(o), buf,
-				  XATTR_LUSTRE_LOV,
+				  XATTR_LUSTRE_LOV, ma,
 				  ma->ma_attr_flags & MDS_CLOSE_LAYOUT_SPLIT ?
 				  LU_XATTR_SPLIT : LU_XATTR_MERGE);
 		if (rc == 0 && ma->ma_attr.la_valid & (LA_SIZE | LA_BLOCKS |

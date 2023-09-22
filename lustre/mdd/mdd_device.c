@@ -37,6 +37,12 @@
 
 #define DEBUG_SUBSYSTEM S_MDS
 
+#define HASH_PFID_CUR_BITS 8
+#define HASH_PFID_MAX_BITS 16
+#define HASH_PFID_BKT_BITS 4
+#define HASH_PFID_MIN_THETA 2
+#define HASH_PFID_MAX_THETA 4
+
 #include <linux/module.h>
 #include <linux/kthread.h>
 #include <obd_class.h>
@@ -53,6 +59,7 @@
 
 static const struct md_device_operations mdd_ops;
 static struct lu_device_type mdd_device_type;
+static struct cfs_hash_ops pfid_hash_ops;
 
 static const char mdd_root_dir_name[] = "ROOT";
 static const char mdd_obf_dir_name[] = "fid";
@@ -281,6 +288,7 @@ static int changelog_user_init_cb(const struct lu_env *env,
 		mdd->mdd_cl.mc_current_mask |= CHANGELOG_DEFMASK;
 	mdd->mdd_cl.mc_mintime = min(mdd->mdd_cl.mc_mintime, rec->cur_time);
 	mdd->mdd_cl.mc_minrec = min(mdd->mdd_cl.mc_minrec, rec->cur_endrec);
+	mdd->mdd_cl.mc_pfid_only = rec->cur_pfid_only;
 	spin_unlock(&mdd->mdd_cl.mc_user_lock);
 	spin_lock(&mdd->mdd_cl.mc_lock);
 	if (rec->cur_endrec > mdd->mdd_cl.mc_index)
@@ -663,6 +671,83 @@ out_cleanup:
 	return rc;
 }
 
+static unsigned 
+mdd_hash_hash(struct cfs_hash *hs, const void *key, unsigned mask) 
+{
+	struct lu_fid *pfid = (struct lu_fid *) key;
+	__u64 pfid_u64 = fid_flatten64(pfid);
+	return cfs_hash_64(pfid_u64, HASH_BIT_SHIFT) & mask;
+}
+
+static void *mdd_hash_key(struct hlist_node *hnode) 
+{
+	struct mdd_pfid_list *mdd_pfid_l;
+	mdd_pfid_l = hlist_entry(hnode, struct mdd_pfid_list, hash);
+	return &mdd_pfid_l->pfid;
+}
+
+static int mdd_hash_keycmp(const void *key, struct hlist_node *hnode)
+{
+	struct lu_fid *fid_cmp;
+	struct mdd_pfid_list *mdd_pfid_l;
+	mdd_pfid_l = hlist_entry(hnode, struct mdd_pfid_list, hash);
+
+	fid_cmp = (struct lu_fid *) key;
+
+	return lu_fid_eq(&mdd_pfid_l->pfid, fid_cmp);	
+}
+
+static void *mdd_hash_object(struct hlist_node *node)
+{
+	return hlist_entry(node, struct mdd_pfid_list, hash);
+}
+
+static void mdd_hash_get(struct cfs_hash *hs, struct hlist_node *hnode)
+{
+	struct mdd_pfid_list *mdd_pfid_l;
+
+	mdd_pfid_l = hlist_entry(hnode, struct mdd_pfid_list, hash);
+	LASSERT(mdd_pfid_l != NULL);
+	
+	atomic_inc(&mdd_pfid_l->ref);
+}
+
+static void mdd_hash_put(struct cfs_hash *hs, struct hlist_node *hnode)
+{
+	struct mdd_pfid_list *mdd_pfid_l;
+
+	mdd_pfid_l = hlist_entry(hnode, struct mdd_pfid_list, hash);
+
+	LASSERT(mdd_pfid_l != NULL);
+	LASSERT(atomic_read(&mdd_pfid_l->ref) > 0);
+
+	if (atomic_dec_and_test(&mdd_pfid_l->ref))
+		OBD_FREE_PTR(mdd_pfid_l);	
+}
+
+static void mdd_hash_put_locked(struct cfs_hash *hs, struct hlist_node *hnode)
+{
+	struct mdd_pfid_list *mdd_pfid_l;
+
+	mdd_pfid_l = hlist_entry(hnode, struct mdd_pfid_list, hash);
+
+	LASSERT(mdd_pfid_l != NULL);
+	LASSERT(atomic_read(&mdd_pfid_l->ref) > 0);
+
+	if (atomic_dec_and_test(&mdd_pfid_l->ref))
+		OBD_FREE_PTR(mdd_pfid_l);	
+}
+
+static struct cfs_hash_ops pfid_hash_ops = {
+	.hs_hash	= mdd_hash_hash,
+	.hs_key 	= mdd_hash_key,
+	.hs_keycmp 	= mdd_hash_keycmp,
+	.hs_object 	= mdd_hash_object,
+	.hs_get 	= mdd_hash_get,
+	.hs_put 	= mdd_hash_put,
+	.hs_put_locked	= mdd_hash_put_locked
+};
+
 static int mdd_changelog_init(const struct lu_env *env, struct mdd_device *mdd)
 {
 	struct obd_device	*obd = mdd2obd_dev(mdd);
@@ -679,6 +764,18 @@ static int mdd_changelog_init(const struct lu_env *env, struct mdd_device *mdd)
 	mdd->mdd_cl.mc_gc_task = MDD_CHLG_GC_NONE;
 	mdd->mdd_cl.mc_mintime = (__u32)ktime_get_real_seconds();
 	mdd->mdd_cl.mc_minrec = ULLONG_MAX;
+
+	mdd->mdd_cl.mc_pfid_hash_table = cfs_hash_create("PFID_HASH_TABLE",
+							HASH_PFID_CUR_BITS,
+							HASH_PFID_MAX_BITS,
+							HASH_PFID_BKT_BITS,
+							0, 
+							HASH_PFID_MIN_THETA,
+							HASH_PFID_MAX_THETA,
+							&pfid_hash_ops,
+							CFS_HASH_SPIN_BKTLOCK |
+							CFS_HASH_REHASH |
+							CFS_HASH_SHRINK);
 
 	rc = mdd_changelog_llog_init(env, mdd);
 	if (rc) {
@@ -743,6 +840,16 @@ again:
 		llog_cat_close(env, ctxt->loc_handle);
 		llog_cleanup(env, ctxt);
 	}
+
+	/*
+	 * If no one else is using pfid hash table, will 
+	 * cleanup and destroy hash table
+	 */ 
+	if (mdd->mdd_cl.mc_pfid_only) {
+		cfs_hash_putref(mdd->mdd_cl.mc_pfid_hash_table);
+	}
+
+
 }
 
 /**
@@ -782,6 +889,15 @@ mdd_changelog_llog_cancel(const struct lu_env *env, struct mdd_device *mdd,
 			goto out;
 		endrec = cur;
 	}
+
+	/*
+	 * Go through and empty list of pfids whose children were recorded in 
+	 * changelog. 
+	 */
+	if (mdd->mdd_cl.mc_pfid_only) {
+		mdd_changelog_clear_pfid_hash_table(mdd);
+	}
+
 
 	/*
 	 * Some records were purged, so reset repeat-access time (so we
@@ -1752,7 +1868,8 @@ static int mdd_changelog_name_check(const struct lu_env *env,
 
 static int mdd_changelog_user_register(const struct lu_env *env,
 				       struct mdd_device *mdd, int *id,
-				       const char *name, const char *mask)
+				       const char *name, const char *mask,
+				       int *pfid_only)
 {
 	struct llog_ctxt *ctxt;
 	struct llog_changelog_user_rec2 *rec;
@@ -1793,7 +1910,10 @@ static int mdd_changelog_user_register(const struct lu_env *env,
 	}
 	*id = rec->cur_id = ++mdd->mdd_cl.mc_lastuser;
 	mdd->mdd_cl.mc_users++;
+	rec->cur_pfid_only = *pfid_only;
+	mdd->mdd_cl.mc_pfid_only = *pfid_only;
 	spin_unlock(&mdd->mdd_cl.mc_user_lock);
+
 
 	rec->cur_time = (__u32)ktime_get_real_seconds();
 	if (OBD_FAIL_PRECHECK(OBD_FAIL_TIME_IN_CHLOG_USER)) {
@@ -2287,6 +2407,24 @@ static int mdd_iocontrol(const struct lu_env *env, struct md_device *m,
 		barrier_exit(mdd->mdd_bottom);
 		RETURN(rc);
 	}
+	case OBD_IOC_TEST_PRINT: {
+		printk(KERN_INFO "Calling OBD_IOC_TEST_PRINT from mdd_iocontrol\n");
+		RETURN(0);
+	}
+	case OBD_IOC_GET_BARRIER: {
+		if (unlikely(!barrier_entry(mdd->mdd_bottom)))
+			RETURN(-EINPROGRESS);
+		RETURN(0);
+	}
+	case OBD_IOC_CHANGELOG_CLEAR_BARRIER: {
+		struct changelog_setinfo *cs = karg;
+
+		rc = mdd_changelog_clear(env, mdd, cs->cs_id,
+					 cs->cs_recno);
+		barrier_exit(mdd->mdd_bottom);
+		RETURN(rc);
+
+	}
 	case OBD_IOC_START_LFSCK: {
 		rc = lfsck_start(env, mdd->mdd_bottom,
 				 (struct lfsck_start_param *)karg);
@@ -2322,7 +2460,8 @@ static int mdd_iocontrol(const struct lu_env *env, struct md_device *m,
 
 		rc = mdd_changelog_user_register(env, mdd, &data->ioc_u32_1,
 						 data->ioc_inlbuf1,
-						 data->ioc_inlbuf2);
+						 data->ioc_inlbuf2,
+						 &data->ioc_u32_2);
 		barrier_exit(mdd->mdd_bottom);
 		break;
 	case OBD_IOC_CHANGELOG_DEREG:
