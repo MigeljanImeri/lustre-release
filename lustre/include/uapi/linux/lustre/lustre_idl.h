@@ -2900,7 +2900,9 @@ struct llog_changelog_user_rec2 {
 	__u32			cur_padding1;
 	char			cur_name[CHANGELOG_USER_NAMELEN];
 	__u64			cur_padding2;
-	__u64			cur_padding3;
+	__u32			cur_pfid_only;
+	__u32 			cur_padding3;
+	__u64			cur_padding4;
 	struct llog_rec_tail	cur_tail;
 } __attribute__((packed));
 

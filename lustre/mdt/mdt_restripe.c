@@ -253,7 +253,7 @@ int mdt_restripe_internal(struct mdt_thread_info *info,
 		buf->lb_buf = lmv;
 		buf->lb_len = sizeof(*lmv);
 		rc = mo_xattr_set(env, mdt_object_child(child), buf,
-				  XATTR_NAME_LMV, LU_XATTR_REPLACE);
+				  XATTR_NAME_LMV, ma, LU_XATTR_REPLACE);
 		if (rc)
 			RETURN(rc);
 
@@ -458,6 +458,7 @@ static int mdt_restripe_migrate_finish(struct mdt_thread_info *info,
 				       struct lmv_mds_md_v1 *lmv)
 {
 	struct mdt_device *mdt = info->mti_mdt;
+	struct md_attr *ma = &info->mti_attr;
 	struct lu_buf buf;
 	struct mdt_lock_handle *lh;
 	int rc;
@@ -477,7 +478,7 @@ static int mdt_restripe_migrate_finish(struct mdt_thread_info *info,
 				   false);
 	if (!rc)
 		rc = mo_xattr_set(info->mti_env, mdt_object_child(stripe), &buf,
-				  XATTR_NAME_LMV, LU_XATTR_REPLACE);
+				  XATTR_NAME_LMV, ma, LU_XATTR_REPLACE);
 	mdt_object_unlock(info, stripe, lh, rc);
 	if (rc)
 		CERROR("%s: update "DFID" LMV failed: rc = %d\n",

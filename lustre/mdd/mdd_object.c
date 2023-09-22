@@ -77,7 +77,6 @@ static int mdd_changelog_data_store_by_fid(const struct lu_env *env,
 
 static inline bool has_prefix(const char *str, const char *prefix);
 
-
 static u32 flags_helper(u64 open_flags)
 {
 	u32 open_mode = 0;
@@ -1020,7 +1019,8 @@ int mdd_changelog_data_store_xattr(const struct lu_env *env,
 				   enum changelog_rec_flags clf_flags,
 				   struct mdd_object *mdd_obj,
 				   const char *xattr_name,
-				   struct thandle *handle)
+				   struct thandle *handle,
+				   const struct lu_fid *pfid)
 {
 	int rc;
 
@@ -1043,7 +1043,7 @@ int mdd_changelog_data_store_xattr(const struct lu_env *env,
 	}
 
 	rc = mdd_changelog_data_store_by_fid(env, mdd, type, clf_flags,
-					     mdd_object_fid(mdd_obj), NULL,
+					     mdd_object_fid(mdd_obj), pfid,
 					     xattr_name, handle);
 	if (rc == 0)
 		mdd_obj->mod_cltime = ktime_get();
@@ -1245,6 +1245,7 @@ int mdd_attr_set(const struct lu_env *env, struct md_object *obj,
 	bool chrgrp_by_unprivileged_user = false;
 	int rc;
 	ENTRY;
+
 
 	/* we do not use ->attr_set() for LOV/HSM EA any more */
 	LASSERT((ma->ma_valid & MA_LOV) == 0);
@@ -1603,7 +1604,7 @@ static int mdd_declare_xattr_del(const struct lu_env *env,
 				 struct thandle *handle);
 
 static int mdd_xattr_del(const struct lu_env *env, struct md_object *obj,
-			 const char *name);
+			 const struct md_attr *ma, const char *name);
 
 static int mdd_xattr_merge(const struct lu_env *env, struct md_object *md_obj,
 			   struct md_object *md_vic)
@@ -2034,7 +2035,7 @@ static int mdd_layout_merge_allowed(const struct lu_env *env,
  */
 static int mdd_xattr_set(const struct lu_env *env, struct md_object *obj,
 			 const struct lu_buf *buf, const char *name,
-			 int fl)
+			 const struct md_attr *ma, int fl)
 {
 	struct mdd_object *mdd_obj = md2mdd_obj(obj);
 	struct lu_attr *attr = MDD_ENV_VAR(env, cattr);
@@ -2085,7 +2086,7 @@ static int mdd_xattr_set(const struct lu_env *env, struct md_object *obj,
 		if (IS_ERR(acl))
 			RETURN(PTR_ERR(acl));
 		if (acl == NULL) {
-			rc = mdd_xattr_del(env, obj, name);
+			rc = mdd_xattr_del(env, obj, ma, name);
 			RETURN(rc);
 		}
 		posix_acl_release(acl);
@@ -2128,7 +2129,7 @@ static int mdd_xattr_set(const struct lu_env *env, struct md_object *obj,
 		GOTO(stop, rc = 0);
 
 	rc = mdd_changelog_data_store_xattr(env, mdd, cl_type, clf_flags,
-					    mdd_obj, name, handle);
+					    mdd_obj, name, handle, &ma->ma_pfid);
 
 	EXIT;
 stop:
@@ -2160,7 +2161,7 @@ static int mdd_declare_xattr_del(const struct lu_env *env,
  * after xattr_set if needed.
  */
 static int mdd_xattr_del(const struct lu_env *env, struct md_object *obj,
-			 const char *name)
+			 const struct md_attr *ma, const char *name)
 {
 	struct mdd_object *mdd_obj = md2mdd_obj(obj);
 	struct lu_attr *attr = MDD_ENV_VAR(env, cattr);
@@ -2199,7 +2200,7 @@ static int mdd_xattr_del(const struct lu_env *env, struct md_object *obj,
 		GOTO(stop, rc = 0);
 
 	rc = mdd_changelog_data_store_xattr(env, mdd, CL_SETXATTR, 0, mdd_obj,
-					    name, handle);
+					    name, handle, &ma->ma_pfid);
 
 	EXIT;
 stop:

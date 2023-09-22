@@ -508,7 +508,7 @@ int mdt_dir_layout_update(struct mdt_thread_info *info)
 		buf->lb_buf = lmv;
 		buf->lb_len = sizeof(*lmv);
 		rc = mo_xattr_set(env, mdt_object_child(obj), buf,
-				  XATTR_NAME_LMV, LU_XATTR_REPLACE);
+				  XATTR_NAME_LMV, ma, LU_XATTR_REPLACE);
 	}
 	GOTO(unlock_obj, rc);
 
@@ -552,6 +552,7 @@ int mdt_reint_setxattr(struct mdt_thread_info *info,
 
 	if (OBD_FAIL_CHECK(OBD_FAIL_MDS_SETXATTR))
 		RETURN(err_serious(-ENOMEM));
+
 
 	rc = mdt_init_ucred_reint(info);
 	if (rc != 0)
@@ -645,6 +646,10 @@ int mdt_reint_setxattr(struct mdt_thread_info *info,
 	if (rc)
 		GOTO(out_unlock, rc);
 
+	rc = mdt_attr_get_pfid(info, obj, &ma->ma_pfid);
+	if (!rc)
+		ma->ma_valid |= MA_PFID;
+
 	if (unlikely(!(valid & OBD_MD_FLCTIME))) {
 		/* This isn't strictly an error, but all current clients
 		 * should set OBD_MD_FLCTIME when setting attributes.
@@ -670,14 +675,14 @@ int mdt_reint_setxattr(struct mdt_thread_info *info,
 
 		buf->lb_buf = rr->rr_eadata;
 		buf->lb_len = xattr_len;
-		rc = mo_xattr_set(env, child, buf, xattr_name, flags);
+		rc = mo_xattr_set(env, child, buf, xattr_name, ma, flags);
 		/* update ctime after xattr changed */
 		if (rc == 0) {
 			ma->ma_attr_flags |= MDS_PERM_BYPASS;
 			mo_attr_set(env, child, ma);
 		}
 	} else if (valid & OBD_MD_FLXATTRRM) {
-		rc = mo_xattr_del(env, child, xattr_name);
+		rc = mo_xattr_del(env, child, ma, xattr_name);
 		/* update ctime after xattr changed */
 		if (rc == 0) {
 			ma->ma_attr_flags |= MDS_PERM_BYPASS;
