@@ -2538,12 +2538,6 @@ static int mdc_set_info_async(const struct lu_env *env,
                                        keylen, key, vallen, val, set);
                 RETURN(rc);
         }
-        if (KEY_IS(KEY_TEST_PRINT)) {
-                rc = do_set_info_async(imp, MDS_SET_INFO, LUSTRE_MDS_VERSION,
-                                       keylen, key, vallen, val, set);
-                RETURN(rc);
-	
-	}
         if (KEY_IS(KEY_HSM_COPYTOOL_SEND)) {
 		rc = mdc_hsm_copytool_send(&imp->imp_obd->obd_uuid, vallen,
 					   val);

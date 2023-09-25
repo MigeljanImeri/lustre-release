@@ -781,7 +781,6 @@ static inline bool obd_mdt_recovery_abort(struct obd_device *obd)
 /* get/set_info keys */
 #define KEY_ASYNC               "async"
 #define KEY_CHANGELOG_CLEAR     "changelog_clear"
-#define KEY_TEST_PRINT		"test_print"
 #define KEY_FID2PATH            "fid2path"
 #define KEY_CHECKSUM            "checksum"
 #define KEY_CLEAR_FS            "clear_fs"

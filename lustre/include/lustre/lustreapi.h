@@ -578,7 +578,7 @@ int llapi_changelog_free(struct changelog_rec **rech);
 int llapi_changelog_get_fd(void *priv);
 /* Allow records up to endrec to be destroyed; requires registered id. */
 int llapi_changelog_clear(const char *mdtname, const char *idstr,
-			  long long endrec, int barrier_held);
+			  long long endrec);
 extern int llapi_changelog_set_xflags(void *priv,
 				    enum changelog_send_extra_flag extra_flags);
 

@@ -228,7 +228,7 @@ static int lsom_update_one(struct fid_rec *f)
 
 clean_up:
 	rc = llapi_changelog_clear(opt.o_mdtname,
-				   opt.o_chlg_user, f->fr_index, 0);
+				   opt.o_chlg_user, f->fr_index);
 	if (rc)
 		llapi_error(LLAPI_MSG_ERROR, rc,
 			    "failed to clear changelog record: %s:%llu",
