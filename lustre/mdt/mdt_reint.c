@@ -770,11 +770,9 @@ static int mdt_attr_set(struct mdt_thread_info *info, struct mdt_object *mo,
 	if (ma->ma_attr.la_valid & (LA_UID|LA_GID|LA_PROJID))
 		mutex_lock(&mo->mot_lov_mutex);
 
-	/*
-	rc = mdt_attr_get_pfid(info, mo, &ma->ma_pfid);
-	if (!rc)
+	if (mdt_attr_get_pfid(info, mo, &ma->ma_pfid) == 0) {
 		ma->ma_valid |= MA_PFID;	
-	*/
+	}
 
 	/* all attrs are packed into mti_attr in unpack_setattr */
 	rc = mo_attr_set(info->mti_env, mdt_object_child(mo), ma);

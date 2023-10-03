@@ -2814,12 +2814,6 @@ static int mdt_set_info(struct tgt_session_info *tsi)
 			RETURN(-EACCES);
 		rc = mdt_iocontrol(OBD_IOC_CHANGELOG_CLEAR, req->rq_export,
 				   vallen, val, NULL);
-
-	} else if (KEY_IS(KEY_TEST_PRINT)) {
-		printk(KERN_INFO "Calling KEY_TEST_PRINT from mdt_set_info\n");
-		rc = mdt_iocontrol(OBD_IOC_TEST_PRINT, req->rq_export,
-				   vallen, val, NULL);
-
 	} else if (KEY_IS(KEY_EVICT_BY_NID)) {
 		if (vallen > 0)
 			obd_export_evict_by_nid(req->rq_export->exp_obd, val);
