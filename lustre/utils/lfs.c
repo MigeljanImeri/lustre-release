@@ -495,7 +495,7 @@ command_t cmdlist[] = {
 	 "The dump flag is optional, and will write the changelog to a file, before it is cleared.\n"
 	 "usage: changelog_clear <mdtname> <id> <endrec> [--dump <file_path>]"},
 	{"chlg2path", lfs_chlg2path, 0,
-	 "Resolve the full path(s) for given FID(s), obtained from a changelog file."
+	 "Resolve the full path(s) for given FID(s), obtained from a changelog file.\n"
 	 "usage: chlgpath <fsname|root> <changelog file>..."},
 	{"fid2path", lfs_fid2path, 0,
 	 "Resolve the full path(s) for given FID(s). For a specific hardlink "
@@ -9974,6 +9974,7 @@ static int lfs_chlg2path(int argc, char **argv)
 	int linkno = -1;
 	size_t len;
 	long long recno = -1;
+	char is_mkdir[4] = "m\n";
 
 	if (argc < 3) {
 		fprintf(stderr,
@@ -10023,8 +10024,9 @@ static int lfs_chlg2path(int argc, char **argv)
 		const char *fid_str = line;
 		struct lu_fid fid;
 		int rc2;
+		int mkdir;
 
-		rc2 = llapi_pfid_parse(fid_str, &fid, NULL);
+		rc2 = llapi_pfid_parse(fid_str, &fid, NULL, &mkdir);
 		if (rc2 < 0) {
 			fprintf(stderr,
 				"%s chlg2path: invalid FID '%s'\n",
@@ -10064,7 +10066,8 @@ static int lfs_chlg2path(int argc, char **argv)
 			 * Note that llapi_fid2path() returns "" for the root
 			 * FID. */
 
-			printf("%s%s%s\n",
+			printf("%s%s%s%s\n",
+				mkdir ? is_mkdir : "",
 			       print_mnt_dir ? mnt_dir : "",
 			       (print_mnt_dir || *path_buf == '\0') ? "/" : "",
 			       path_buf);

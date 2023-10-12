@@ -91,7 +91,7 @@ static int copy_strip_dne_path(const char *src, char *tgt, size_t tgtlen)
  * \retval	0 on success
  * \retval	-errno on failure
  */
-int llapi_pfid_parse(const char *fidstr, struct lu_fid *fid, char **endptr)
+int llapi_pfid_parse(const char *fidstr, struct lu_fid *fid, char **endptr, int *mkdir)
 {
 	unsigned long long val;
 	bool bracket = false;
@@ -112,9 +112,11 @@ int llapi_pfid_parse(const char *fidstr, struct lu_fid *fid, char **endptr)
 
 	if (chlg_rec_type == CL_MKDIR) {
 		fid_type = 't';
+		*mkdir = 1;
 	}
 	else {
 		fid_type = 'p';
+		*mkdir = 0;
 	}
 
 	while (*fidstr != fid_type) {
