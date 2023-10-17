@@ -104,6 +104,7 @@ static int lfs_flushctx(int argc, char **argv);
 static int lfs_poollist(int argc, char **argv);
 static int lfs_changelog(int argc, char **argv);
 static int lfs_changelog_clear(int argc, char **argv);
+static int lfs_chlg2path(int argc, char **argv);
 static int lfs_fid2path(int argc, char **argv);
 static int lfs_path2fid(int argc, char **argv);
 static int lfs_rmfid(int argc, char **argv);
@@ -493,6 +494,9 @@ command_t cmdlist[] = {
 	 "An <endrec> of 0 means all records.\n"
 	 "The dump flag is optional, and will write the changelog to a file, before it is cleared.\n"
 	 "usage: changelog_clear <mdtname> <id> <endrec> [--dump <file_path>]"},
+	{"chlg2path", lfs_chlg2path, 0,
+	 "Resolve the full path(s) for given FID(s), obtained from a changelog file.\n"
+	 "usage: chlgpath <fsname|root> <changelog file>..."},
 	{"fid2path", lfs_fid2path, 0,
 	 "Resolve the full path(s) for given FID(s). For a specific hardlink "
 	 "specify link number <linkno>.\n"
@@ -9740,6 +9744,8 @@ static int lfs_changelog_clear(int argc, char **argv)
 	id = malloc(strlen(argv[2] + 1));
 	strcpy(id, argv[2]);
 
+	file_name = NULL;
+
 	while ((c = getopt_long(argc, argv, "d::",
 		long_opts, NULL)) != -1) {
 		switch (c) {
@@ -9747,8 +9753,8 @@ static int lfs_changelog_clear(int argc, char **argv)
 			if (optarg == NULL && optind < argc 
 					&& argv[optind][0] != '-') {
 				optarg = argv[optind++];
+				file_name = strdup(optarg);
 			}
-			file_name = strdup(optarg);
 			print_changelog(mdd_name, file_name);
 			break;
 		default:
@@ -9951,6 +9957,131 @@ static int lfs_fid2path(int argc, char **argv)
 out:
 	if (!(mnt_fd < 0))
 		close(mnt_fd);
+
+	return rc;
+}
+
+
+static int lfs_chlg2path(int argc, char **argv)
+{
+	bool print_mnt_dir;
+	char mnt_dir[PATH_MAX] = "";
+	int mnt_fd = -1;
+	FILE *chlg_file = NULL;
+	char *path_or_fsname;
+	char *line;
+	int rc = 0;
+	int linkno = -1;
+	size_t len;
+	long long recno = -1;
+	char is_mkdir[4] = "m\n";
+
+	if (argc < 3) {
+		fprintf(stderr,
+			"Usage: %s chlg2path FSNAME|ROOT changelog_file...\n",
+			progname);
+		return CMD_HELP;
+	}
+
+	path_or_fsname = argv[1];
+
+	if (*path_or_fsname == '/') {
+		print_mnt_dir = true;
+		rc = llapi_search_mounts(path_or_fsname, 0, mnt_dir, NULL);
+	} else {
+		print_mnt_dir = false;
+		rc = llapi_search_rootpath(mnt_dir, path_or_fsname);
+	}
+
+	if (rc < 0) {
+		fprintf(stderr,
+			"%s chlg2path: cannot resolve mount point for '%s': %s\n",
+			progname, path_or_fsname, strerror(-rc));
+		goto out;
+	}
+
+	mnt_fd = open(mnt_dir, O_RDONLY | O_DIRECTORY);
+	if (mnt_fd < 0) {
+		fprintf(stderr,
+			"%s chlg2path: cannot open mount point for '%s': %s\n",
+			progname, path_or_fsname, strerror(-rc));
+		goto out;
+	}
+
+	/* Strip trailing slashes from mnt_dir. */
+	rstripc(mnt_dir + 1, '/');
+
+	chlg_file = fopen(argv[2], "r");
+
+	if (chlg_file < 0) {
+		fprintf(stderr,
+			"%s chlg2path: cannot open changelog file for '%s': %s\n",
+			progname, argv[3], strerror(-rc));
+		goto out;
+	}
+
+	while (getline(&line, &len, chlg_file) != -1) {
+		const char *fid_str = line;
+		struct lu_fid fid;
+		int rc2;
+		int mkdir;
+
+		rc2 = llapi_pfid_parse(fid_str, &fid, NULL, &mkdir);
+		if (rc2 < 0) {
+			fprintf(stderr,
+				"%s chlg2path: invalid FID '%s'\n",
+				progname, fid_str);
+			if (rc == 0)
+				rc = rc2;
+
+			continue;
+		}
+
+		int linktmp = (linkno >= 0) ? linkno : 0;
+		while (1) {
+			int oldtmp = linktmp;
+			long long rectmp = recno;
+			char path_buf[PATH_MAX];
+
+			rc2 = llapi_fid2path_at(mnt_fd, &fid,
+				path_buf, sizeof(path_buf), &rectmp, &linktmp);
+			if (rc2 < 0) {
+				fprintf(stderr,
+					"%s chlg2path: cannot find %s %s: %s\n",
+					progname, path_or_fsname, fid_str,
+					strerror(-rc2));
+				if (rc == 0)
+					rc = rc2;
+				break;
+			}
+
+			/* You may think this looks wrong or weird (and it is!)
+			 * but we are actually trying to preserve the old quirky
+			 * behaviors (enforced by our old quirky tests!) that
+			 * make lfs so much fun to work on:
+			 *
+			 *   lustre 0x200000007:0x1:0x0 => "/"
+			 *   /mnt/lustre 0x200000007:0x1:0x0 => "/mnt/lustre//"
+			 *
+			 * Note that llapi_fid2path() returns "" for the root
+			 * FID. */
+
+			printf("%s%s%s%s\n",
+				mkdir ? is_mkdir : "",
+			       print_mnt_dir ? mnt_dir : "",
+			       (print_mnt_dir || *path_buf == '\0') ? "/" : "",
+			       path_buf);
+
+			if (oldtmp == linktmp)
+				/* no more links */
+				break;
+		}
+	}
+out:
+	if (!(mnt_fd < 0))
+		close(mnt_fd);
+	if (!(chlg_file < 0))
+		fclose(chlg_file);
 
 	return rc;
 }

@@ -77,6 +77,116 @@ static int copy_strip_dne_path(const char *src, char *tgt, size_t tgtlen)
 
 	return 0;
 }
+/**
+ * parse a FID from a string into a binary lu_fid
+ *
+ * Only the format of the FID is checked, not whether the numeric value
+ * contains a valid FID sequence or object ID or version. Optional leading
+ * whitespace and '[' from the standard FID format are skipped.
+ *
+ * \param[in] fidstr	string to be parsed
+ * \param[out] fid	Lustre File IDentifier
+ * \param[out] endptr	pointer to first invalid/unused character in @fidstr
+ *
+ * \retval	0 on success
+ * \retval	-errno on failure
+ */
+int llapi_pfid_parse(const char *fidstr, struct lu_fid *fid, char **endptr, int *mkdir)
+{
+	unsigned long long val;
+	bool bracket = false;
+	char *end = (char *)fidstr;
+	long int chlg_rec_type;
+	char fid_type;
+	int rc = 0;
+
+	if (!fidstr || !fid) {
+		rc = -EINVAL;
+		goto out;
+	}
+
+	while (!isspace(*fidstr))
+		fidstr++;
+	
+	chlg_rec_type = strtol(fidstr, &end, 10);
+
+	if (chlg_rec_type == CL_MKDIR) {
+		fid_type = 't';
+		*mkdir = 1;
+	}
+	else {
+		fid_type = 'p';
+		*mkdir = 0;
+	}
+
+	while (*fidstr != fid_type) {
+		fidstr++;
+
+		if (*fidstr == fid_type) {
+			if (*(++fidstr) == '=') {
+				fidstr++;
+				break;
+			}
+		}
+	}
+
+	while (isspace(*fidstr))
+		fidstr++;
+	while (*fidstr == '[') {
+		bracket = true;
+		fidstr++;
+	}
+
+	/* Parse the FID fields individually with strtoull() instead of a
+	 * single call to sscanf() so that the character after the FID can
+	 * be returned in @endptr, in case the string has more to parse.
+	 * If values are present, but too large for the field, continue
+	 * parsing to consume the whole FID and return -ERANGE at the end.
+	 */
+	errno = 0;
+	val = strtoull(fidstr, &end, 0);
+	if ((val == 0 && errno == EINVAL) || *end != ':') {
+		rc = -EINVAL;
+		goto out;
+	}
+	if (val >= UINT64_MAX)
+		rc = -ERANGE;
+	else
+		fid->f_seq = val;
+
+	fidstr = end + 1; /* skip first ':', checked above */
+	errno = 0;
+	val = strtoull(fidstr, &end, 0);
+	if ((val == 0 && errno == EINVAL) || *end != ':') {
+		rc = -EINVAL;
+		goto out;
+	}
+	if (val > UINT32_MAX)
+		rc = -ERANGE;
+	else
+		fid->f_oid = val;
+
+	fidstr = end + 1; /* skip second ':', checked above */
+	errno = 0;
+	val = strtoull(fidstr, &end, 0);
+	if (val == 0 && errno == EINVAL) {
+		rc = -EINVAL;
+		goto out;
+	}
+	if (val > UINT32_MAX)
+		rc = -ERANGE;
+	else
+		fid->f_ver = val;
+
+	if (bracket && *end == ']')
+		end++;
+out:
+	if (endptr)
+		*endptr = end;
+
+	errno = -rc;
+	return rc;
+}
 
 /**
  * parse a FID from a string into a binary lu_fid
