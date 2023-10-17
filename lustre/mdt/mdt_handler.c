@@ -2767,7 +2767,6 @@ static int mdt_set_info(struct tgt_session_info *tsi)
 
 	ENTRY;
 
-	printk(KERN_INFO "We got to mdt_set_info\n");
 
 	key = req_capsule_client_get(tsi->tsi_pill, &RMF_SETINFO_KEY);
 	if (key == NULL) {
@@ -2818,7 +2817,6 @@ static int mdt_set_info(struct tgt_session_info *tsi)
 		if (vallen > 0)
 			obd_export_evict_by_nid(req->rq_export->exp_obd, val);
 	} else {
-		printk(KERN_INFO "mdt_set_info doesn't recognize key passed in\n");
 		RETURN(-EINVAL);
 	}
 	RETURN(rc);

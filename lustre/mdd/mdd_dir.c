@@ -962,8 +962,6 @@ int mdd_changelog_store_pfid(struct mdd_device *mdd, struct llog_changelog_rec *
 
 		if (mdd_changelog_add_unique_pfid_to_hash(mdd, &rnm->cr_spfid) &&
 			mdd_changelog_add_unique_pfid_to_hash(mdd, &rec->cr.cr_pfid)) {
-			printk(KERN_INFO "Returning from mdd_changelog_store because pfid "DFID" \
-			and spfid "DFID" are already in list\n",PFID(&rec->cr.cr_pfid), PFID(&rnm->cr_spfid));
 			return(0);
 		}
 
@@ -974,7 +972,6 @@ int mdd_changelog_store_pfid(struct mdd_device *mdd, struct llog_changelog_rec *
 	else {
 		if (fid_is_sane(&rec->cr.cr_pfid)) {
 			if (mdd_changelog_add_unique_pfid_to_hash(mdd, &rec->cr.cr_pfid)) {
-				printk(KERN_INFO "Returning from mdd_changelog_store because pfid "DFID" is already in list\n",PFID(&rec->cr.cr_pfid));
 				return(0);
 			}
 		}
