@@ -1894,7 +1894,8 @@ static bool mdd_hsm_archive_exists(const struct lu_env *env,
  */
 static int mdd_unlink(const struct lu_env *env, struct md_object *pobj,
 		      struct md_object *cobj, const struct lu_name *lname,
-		      struct md_attr *ma, int no_name)
+		      struct md_attr *ma, int no_name,
+		      const struct lu_name *fullname)
 {
 	char *name = (char *)lname->ln_name;
 	struct lu_attr *pattr = MDD_ENV_VAR(env, pattr);
@@ -2053,8 +2054,9 @@ cleanup:
 
 		rc = mdd_changelog_ns_store(env, mdd,
 			is_dir ? CL_RMDIR : CL_UNLINK, cl_flags,
-			mdd_cobj, mdd_pobj, pattr, NULL,
-			NULL, NULL, lname, NULL, handle);
+			mdd_cobj, mdd_pobj, pattr, NULL, NULL, NULL,
+			fullname != NULL ? fullname : lname, NULL, handle);
+
 	}
 
 stop:

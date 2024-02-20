@@ -2580,7 +2580,7 @@ static int mdt_rmfid_unlink(struct mdt_thread_info *info,
 	mutex_lock(&obj->mot_lov_mutex);
 
 	rc = mdo_unlink(info->mti_env, mdt_object_child(pobj),
-			mdt_object_child(obj), name, ma, 0);
+			mdt_object_child(obj), name, ma, 0, NULL);
 
 	mutex_unlock(&obj->mot_lov_mutex);
 
@@ -7455,7 +7455,7 @@ out:
  * \retval 0 Lookup successful, path information stored in fp
  * \retval negative errno if there was a problem
  */
-static int mdt_path(struct mdt_thread_info *info, struct mdt_object *obj,
+int mdt_path(struct mdt_thread_info *info, struct mdt_object *obj,
 		    struct getinfo_fid2path *fp, struct lu_fid *root_fid)
 {
 	struct mdt_device	*mdt = info->mti_mdt;

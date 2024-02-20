@@ -1021,6 +1021,8 @@ int mdt_pack_encctx_in_reply(struct mdt_thread_info *info,
 void mdt_prep_ma_buf_from_rep(struct mdt_thread_info *info,
 			      struct mdt_object *obj, struct md_attr *ma,
 			      __u64 open_flags);
+int mdt_path(struct mdt_thread_info *info, struct mdt_object *obj,
+		    struct getinfo_fid2path *fp, struct lu_fid *root_fid);
 
 static inline struct mdt_device *mdt_dev(struct lu_device *d)
 {

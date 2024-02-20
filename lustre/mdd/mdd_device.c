@@ -926,7 +926,8 @@ static int mdd_dummy_unlink(const struct lu_env *env,
 			    struct md_object *cobj,
 			    const struct lu_name *lname,
 			    struct md_attr *ma,
-			    int no_name)
+			    int no_name,
+			    const struct lu_name *fullname)
 {
 	return -EPERM;
 }

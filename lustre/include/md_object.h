@@ -352,7 +352,8 @@ struct md_dir_operations {
 
 	int (*mdo_unlink)(const struct lu_env *env, struct md_object *pobj,
 			  struct md_object *cobj, const struct lu_name *lname,
-			  struct md_attr *ma, int no_name);
+			  struct md_attr *ma, int no_name,
+			  const struct lu_name *fullname);
 
 	int (*mdo_migrate)(const struct lu_env *env, struct md_object *spobj,
 			   struct md_object *tpobj, struct md_object *sobj,
@@ -679,10 +680,12 @@ static inline int mdo_unlink(const struct lu_env *env,
 			     struct md_object *p,
 			     struct md_object *c,
 			     const struct lu_name *lname,
-			     struct md_attr *ma, int no_name)
+			     struct md_attr *ma, int no_name,
+			     const struct lu_name *fullname)
 {
 	LASSERT(p->mo_dir_ops->mdo_unlink);
-	return p->mo_dir_ops->mdo_unlink(env, p, c, lname, ma, no_name);
+	return p->mo_dir_ops->mdo_unlink(env, p, c, lname, ma, no_name,
+			fullname);
 }
 
 static inline int mdo_statfs(const struct lu_env *env,

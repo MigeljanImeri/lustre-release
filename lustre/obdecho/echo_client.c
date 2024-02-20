@@ -1657,7 +1657,7 @@ static int echo_md_destroy_internal(const struct lu_env *env,
 	CDEBUG(D_RPCTRACE, "Start destroy object "DFID" %s %p\n",
 	       PFID(lu_object_fid(&parent->mo_lu)), lname->ln_name, parent);
 
-	rc = mdo_unlink(env, parent, lu2md(child), lname, ma, 0);
+	rc = mdo_unlink(env, parent, lu2md(child), lname, ma, 0, NULL);
 	if (rc) {
 		CERROR("Can not unlink child %s: rc = %d\n",
 			lname->ln_name, rc);

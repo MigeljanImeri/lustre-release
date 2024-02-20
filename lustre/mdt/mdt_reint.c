@@ -1120,6 +1120,8 @@ static int mdt_reint_unlink(struct mdt_thread_info *info,
 	struct mdt_lock_handle *child_lh;
 	struct ldlm_enqueue_info *einfo = &info->mti_einfo;
 	struct lu_ucred *uc  = mdt_ucred(info);
+	struct getinfo_fid2path *fp = NULL;
+	struct lu_name *fullname = NULL;
 	int no_name = 0;
 	ktime_t kstart = ktime_get();
 	int rc;
@@ -1169,7 +1171,7 @@ static int mdt_reint_unlink(struct mdt_thread_info *info,
 		ma->ma_need = MA_INODE;
 		ma->ma_valid = 0;
 		rc = mdo_unlink(info->mti_env, mdt_object_child(mp),
-				NULL, &rr->rr_name, ma, no_name);
+				NULL, &rr->rr_name, ma, no_name, NULL);
 		GOTO(unlock_parent, rc);
 	}
 
@@ -1213,6 +1215,29 @@ static int mdt_reint_unlink(struct mdt_thread_info *info,
 	mc = mdt_object_find(info->mti_env, info->mti_mdt, child_fid);
 	if (IS_ERR(mc))
 		GOTO(unlock_parent, rc = PTR_ERR(mc));
+
+	/* Only want to get full path for directories that are being removed. */
+	if ((ma->ma_attr.la_mode & S_IFMT) == S_IFDIR) {
+		OBD_ALLOC(fullname, sizeof(*fullname));
+		OBD_ALLOC(fp, sizeof(*fp) + PATH_MAX);
+		if (fp == NULL)
+			GOTO(put_child, rc = -ENOMEM);
+
+		if (fullname == NULL)
+			GOTO(put_child, rc = -ENOMEM);
+
+		fp->gf_fid = *child_fid;
+		fp->gf_pathlen = PATH_MAX;
+
+		if (mdt_path(info, mc, fp, NULL) == 0) {
+#ifndef HAVE_FID2PATH_ANON_UNIONS
+			fullname->ln_name = fp->gf_u.gf_path;
+#else
+			fullname->ln_name = fp->gf_path;
+#endif
+			fullname->ln_namelen = strlen(fullname->ln_name) + 1;
+		}
+	}
 
 	if (info->mti_spec.sp_cr_flags & MDS_OP_WITH_FID) {
 		/* In this case, child fid is embedded in the request, and we do
@@ -1282,8 +1307,10 @@ static int mdt_reint_unlink(struct mdt_thread_info *info,
 
 	mutex_lock(&mc->mot_lov_mutex);
 
+
 	rc = mdo_unlink(info->mti_env, mdt_object_child(mp),
-			mdt_object_child(mc), &rr->rr_name, ma, no_name);
+			mdt_object_child(mc), &rr->rr_name,
+			ma, no_name, fullname);
 
 	mutex_unlock(&mc->mot_lov_mutex);
 	if (rc != 0)
@@ -1335,6 +1362,14 @@ unlock_parent:
 put_parent:
 	mdt_object_put(info->mti_env, mp);
 	CFS_RACE_WAKEUP(OBD_FAIL_OBD_ZERO_NLINK_RACE);
+	if (fp != NULL) {
+		OBD_FREE(fp, sizeof(*fp) + PATH_MAX);
+		fp = NULL;
+	}
+	if (fullname != NULL) {
+		OBD_FREE(fullname, sizeof(*fullname));
+		fullname = NULL;
+	}
 	return rc;
 }
 

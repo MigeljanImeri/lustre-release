@@ -1703,7 +1703,9 @@ again_pw:
 					mdt_object_child(parent),
 					mdt_object_child(child),
 					&rr->rr_name,
-					&info->mti_attr, 0);
+					&info->mti_attr,
+					0,
+					NULL);
 			if (rc != 0)
 				CERROR("%s: "DFID" cleanup of open: rc = %d\n",
 				       mdt_obd_name(info->mti_mdt),
