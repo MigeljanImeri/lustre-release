@@ -950,7 +950,7 @@ int mdd_changelog_store_pfid(struct mdd_device *mdd, struct llog_changelog_rec *
 		 * also check the pfid and see if it has been added, and if not add it
 		 */
 		mdd_changelog_add_unique_pfid_to_hash(mdd, &rec->cr.cr_tfid);
-		mdd_changelog_add_unique_pfid_to_hash(mdd, &rec->cr.cr_pfid);
+		return (1);
 		
 	}
 	else if (rec->cr.cr_type == CL_RENAME) {
@@ -958,21 +958,28 @@ int mdd_changelog_store_pfid(struct mdd_device *mdd, struct llog_changelog_rec *
 		 * a source pfid and a target pfid, and we need to check 
 		 * both to see if they have been recorded already
 		 */
+		/*
 		struct changelog_ext_rename *rnm = changelog_rec_rename(&rec->cr);
 
 		if (mdd_changelog_add_unique_pfid_to_hash(mdd, &rnm->cr_spfid) &&
 			mdd_changelog_add_unique_pfid_to_hash(mdd, &rec->cr.cr_pfid)) {
-			return(0);
+			return (0);
 		}
 
 		mdd_changelog_add_unique_pfid_to_hash(mdd, &rec->cr.cr_pfid);
 		mdd_changelog_add_unique_pfid_to_hash(mdd, &rnm->cr_spfid);
+		*/
+		return (1);
 	}
-
+	/* Always record CL_RMDIR, as we use it to figure out what directories 
+	 * need to be deleted. */
+	else if (rec->cr.cr_type == CL_RMDIR) {
+		return (1);
+	}
 	else {
 		if (fid_is_sane(&rec->cr.cr_pfid)) {
 			if (mdd_changelog_add_unique_pfid_to_hash(mdd, &rec->cr.cr_pfid)) {
-				return(0);
+				return (0);
 			}
 		}
 		else {
