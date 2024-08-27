@@ -37,11 +37,8 @@
 
 #define DEBUG_SUBSYSTEM S_MDS
 
-#define HASH_PFID_CUR_BITS 24
-#define HASH_PFID_MAX_BITS 30
-#define HASH_PFID_BKT_BITS 4
-#define HASH_PFID_MIN_THETA 2
-#define HASH_PFID_MAX_THETA 4
+#define HASH_PFID_CUR_BITS 13
+#define HASH_BIT_SHIFT 32
 
 #include <linux/module.h>
 #include <linux/kthread.h>
@@ -767,15 +764,16 @@ static int mdd_changelog_init(const struct lu_env *env, struct mdd_device *mdd)
 
 	mdd->mdd_cl.mc_pfid_hash_table = cfs_hash_create("PFID_HASH_TABLE",
 							HASH_PFID_CUR_BITS,
-							HASH_PFID_MAX_BITS,
-							HASH_PFID_BKT_BITS,
+							CFS_HASH_BITS_MAX,
+							CFS_HASH_BKT_BITS,
 							0, 
-							HASH_PFID_MIN_THETA,
-							HASH_PFID_MAX_THETA,
+							CFS_HASH_MIN_THETA,
+							CFS_HASH_MAX_THETA,
 							&pfid_hash_ops,
 							CFS_HASH_SPIN_BKTLOCK |
 							CFS_HASH_REHASH |
-							CFS_HASH_SHRINK);
+							CFS_HASH_SHRINK |
+							CFS_HASH_DEPTH);
 
 	rc = mdd_changelog_llog_init(env, mdd);
 	if (rc) {
@@ -895,6 +893,8 @@ mdd_changelog_llog_cancel(const struct lu_env *env, struct mdd_device *mdd,
 	 * changelog. 
 	 */
 	if (mdd->mdd_cl.mc_pfid_only) {
+		cfs_hash_debug_header(NULL);
+		cfs_hash_debug_str(mdd->mdd_cl.mc_pfid_hash_table, NULL);
 		mdd_changelog_clear_pfid_hash_table(mdd);
 	}
 

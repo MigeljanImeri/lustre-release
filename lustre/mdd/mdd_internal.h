@@ -92,8 +92,6 @@
 #define MDD_CHLG_GC_START (struct task_struct *)(-2)
 /** else the started task_struct address when running **/
 
-#define HASH_BIT_SHIFT 6
-
 struct mdd_pfid_list {
 	struct lu_fid		pfid;
 	struct hlist_node	hash;

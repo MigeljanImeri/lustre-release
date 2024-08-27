@@ -2049,7 +2049,7 @@ EXPORT_SYMBOL(cfs_hash_rehash_key);
 
 void cfs_hash_debug_header(struct seq_file *m)
 {
-	seq_printf(m, "%-*s   cur   min   max theta t-min t-max flags rehash   count  maxdep maxdepb distribution\n",
+	printk(KERN_INFO "%-*s   cur   min   max theta t-min t-max flags rehash   count  maxdep maxdepb distribution\n",
 		   CFS_HASH_BIGNAME_LEN, "name");
 }
 EXPORT_SYMBOL(cfs_hash_debug_header);
@@ -2090,7 +2090,7 @@ void cfs_hash_debug_str(struct cfs_hash *hs, struct seq_file *m)
 	cfs_hash_lock(hs, 0);
 	theta = __cfs_hash_theta(hs);
 
-	seq_printf(m, "%-*s %5d %5d %5d %d.%03d %d.%03d %d.%03d  0x%02x %6d ",
+	printk(KERN_INFO "%-*s %5d %5d %5d %d.%03d %d.%03d %d.%03d  0x%02x %6d ",
 		   CFS_HASH_BIGNAME_LEN, hs->hs_name,
 		   1 << hs->hs_cur_bits, 1 << hs->hs_min_bits,
 		   1 << hs->hs_max_bits,
@@ -2128,9 +2128,9 @@ void cfs_hash_debug_str(struct cfs_hash *hs, struct seq_file *m)
 		cfs_hash_bd_unlock(hs, &bd, 0);
 	}
 
-	seq_printf(m, "%7d %7d %7d ", total, maxdep, maxdepb);
+	printk(KERN_INFO "%7d %7d %7d ", total, maxdep, maxdepb);
 	for (i = 0; i < 8; i++)
-		seq_printf(m, "%d%c",  dist[i], (i == 7) ? '\n' : '/');
+		printk(KERN_INFO "%d%c",  dist[i], (i == 7) ? '\n' : '/');
 
 	cfs_hash_unlock(hs, 0);
 }
