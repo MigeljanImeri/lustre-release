@@ -93,6 +93,7 @@
 /** else the started task_struct address when running **/
 
 struct mdd_pfid_list {
+	__u64			index;	
 	struct lu_fid		pfid;
 	struct hlist_node	hash;
 	atomic_t 		ref;
@@ -893,8 +894,9 @@ static inline bool mdd_changelog_is_too_idle(struct mdd_device *mdd,
  * Tries to add a pfid to the hash table, if it doesn't exist, will add it and 
  * return 0. Will return non zero if it already exists and doesn't add pfid.
  */
-static inline int mdd_changelog_add_unique_pfid_to_hash(struct mdd_device *mdd,
-						const struct lu_fid *pfid)
+static inline int mdd_changelog_add_unique_pfid(struct mdd_device *mdd,
+						const struct lu_fid *pfid,
+						__u64 index)
 {	
 	int rc;
 	struct mdd_pfid_list *pfid_list;
@@ -905,41 +907,48 @@ static inline int mdd_changelog_add_unique_pfid_to_hash(struct mdd_device *mdd,
 		RETURN(-ENOMEM);
 
 	pfid_list->pfid = *pfid;
-	rc = cfs_hash_add_unique(mdd->mdd_cl.mc_pfid_hash_table, pfid, &pfid_list->hash);
-	
-	return rc;
-}
-
-/*
- * Checks if a pfid exists in the hash table, returns 1 if it does exists, 0 otherwise. 
- */
-static inline bool mdd_changelog_check_pfid_in_hash(struct mdd_device *mdd,
-						const struct lu_fid *pfid)
-{
-	struct mdd_pfid_list	*temp;
-
-	temp = cfs_hash_lookup(mdd->mdd_cl.mc_pfid_hash_table, (void *)pfid);
-
-	if (temp) {
-		printk(KERN_INFO "Current pfid "DFID" is already in list\n", PFID(pfid));
-		cfs_hash_put_locked(mdd->mdd_cl.mc_pfid_hash_table, &temp->hash);
-		RETURN(1);
+	if (index != 0) {
+		pfid_list->index = index + 1;
+	}
+	else {
+		spin_lock(&mdd->mdd_cl.mc_lock);
+		pfid_list->index = mdd->mdd_cl.mc_index + 1;
+		spin_unlock(&mdd->mdd_cl.mc_lock);
 	}
 
-	RETURN(0);
+	rc = cfs_hash_add_unique(mdd->mdd_cl.mc_pfid_hash_table, &pfid_list->pfid, &pfid_list->hash);
+
+	if (rc == -EALREADY) {
+		OBD_FREE_PTR(pfid_list);
+		return rc;
+	}
+
+	return rc;
+	
 }
 
+static int 
+mdd_changelog_hash_should_delete(void *object, void* data) {
+	struct mdd_pfid_list *pfid_list = (struct mdd_pfid_list *) object;
+	__u64 *index = (__u64 *) data;
+
+	LASSERT(pfid_list != NULL);
+
+	return pfid_list->index <= *index ? 1 : 0;
+}	
+/*
 static int 
 cfs_hash_itr_func(struct cfs_hash *hs, struct cfs_hash_bd *bd, struct hlist_node *node, void *data)
 {
 	cfs_hash_bd_del_locked(hs, bd, node);
 	return 0;
 }
+*/
 
-static inline void mdd_changelog_clear_pfid_hash_table(struct mdd_device *mdd)
+static inline void mdd_changelog_clear_pfid_hash_table(struct mdd_device *mdd, __u64 index)
 {
 	if (mdd->mdd_cl.mc_pfid_hash_table)
-		cfs_hash_for_each_safe(mdd->mdd_cl.mc_pfid_hash_table, cfs_hash_itr_func, NULL); 
+		cfs_hash_cond_del(mdd->mdd_cl.mc_pfid_hash_table, mdd_changelog_hash_should_delete, &index);
 }
 
 bool mdd_changelog_is_space_safe(const struct lu_env *env,

@@ -938,57 +938,42 @@ bool mdd_changelog_need_gc(const struct lu_env *env, struct mdd_device *mdd,
 	       OBD_FAIL_CHECK(OBD_FAIL_FORCE_GC_THREAD);
 }
 
-/* Checks changelog rec for unique pfids and adds them to hash table, returns 0 if no unique 
- * pfids were added to hash table. Returns 1 otherwise.
+/*
+ * Check if rec should be added to changelog. 
+ * Returns 0 if shouldn't be added, 1 otherwise.
  */
-int mdd_changelog_store_pfid(struct mdd_device *mdd, struct llog_changelog_rec *rec)
+int mdd_changelog_should_add_rec(struct mdd_device *mdd, struct llog_changelog_rec *rec)
 {
-	if (rec->cr.cr_type == CL_MKDIR) {
-		/* with MKDIR changelog types, record the target fid
-		 * as that way we know which directories to index
-		 * and don't have to recursively look through the directories
-		 * also check the pfid and see if it has been added, and if not add it
-		 */
-		mdd_changelog_add_unique_pfid_to_hash(mdd, &rec->cr.cr_tfid);
-		return (1);
-		
-	}
-	else if (rec->cr.cr_type == CL_RENAME) {
-		/* CL_RENAME is another special case, as it has both 
-		 * a source pfid and a target pfid, and we need to check 
-		 * both to see if they have been recorded already
-		 */
-		/*
-		struct changelog_ext_rename *rnm = changelog_rec_rename(&rec->cr);
-
-		if (mdd_changelog_add_unique_pfid_to_hash(mdd, &rnm->cr_spfid) &&
-			mdd_changelog_add_unique_pfid_to_hash(mdd, &rec->cr.cr_pfid)) {
-			return (0);
-		}
-
-		mdd_changelog_add_unique_pfid_to_hash(mdd, &rec->cr.cr_pfid);
-		mdd_changelog_add_unique_pfid_to_hash(mdd, &rnm->cr_spfid);
-		*/
-		return (1);
-	}
+	switch (rec->cr.cr_type) {
+	/*
+	 * always add RENAME changelog record types,
+	 */
+	case CL_RENAME:
+		return 1;
+		break;
+	/* with MKDIR changelog types, record the target fid
+	 * as that way we know which directories to index
+	 * and don't have to recursively look through the directories
+	 */
+	case CL_MKDIR:
+		mdd_changelog_add_unique_pfid(mdd, &rec->cr.cr_tfid, rec->cr.cr_index);
+		return 1;
+		break;
 	/* Always record CL_RMDIR, as we use it to figure out what directories 
 	 * need to be deleted. */
-	else if (rec->cr.cr_type == CL_RMDIR) {
-		return (1);
-	}
-	else {
+	case CL_RMDIR:
+		return 1;
+		break;
+	default:
 		if (fid_is_sane(&rec->cr.cr_pfid)) {
-			if (mdd_changelog_add_unique_pfid_to_hash(mdd, &rec->cr.cr_pfid)) {
-				return (0);
-			}
+			return (mdd_changelog_add_unique_pfid(mdd, &rec->cr.cr_pfid, rec->cr.cr_index) == 0);
 		}
-		else {
-			return (1);
-		}
+		/*
+		 * rec type doesn't have pfid, just store to changelog. 
+		 */
+		return 1;
+		break;
 	}
-
-	/* Shouldn't get here*/
-	return (1);
 }
 
 /** Add a changelog entry \a rec to the changelog llog
@@ -1012,9 +997,9 @@ int mdd_changelog_store(const struct lu_env *env, struct mdd_device *mdd,
 					    changelog_rec_varsize(&rec->cr));
 
 	if (mdd->mdd_cl.mc_pfid_only) {
-		rc = mdd_changelog_store_pfid(mdd, rec);
+		rc = mdd_changelog_should_add_rec(mdd, rec);
 		if (rc == 0)
-			return (rc);
+			return rc;
 	}
 	
 
